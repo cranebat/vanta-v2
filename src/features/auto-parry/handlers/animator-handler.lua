@@ -116,6 +116,7 @@ return LPH_NO_VIRTUALIZE(function()
     local self_anim_data = {};  
 
     local allAnimations = {};
+    local animPaths = {};
     local mobsAnims = {};
     do
         local animsFolder = services.ReplicatedStorage:WaitForChild("Assets"):WaitForChild("Anims");
@@ -141,6 +142,17 @@ return LPH_NO_VIRTUALIZE(function()
             if not animationId then continue end;
 
             allAnimations[animationId] = format('%s-%s', v.Parent.Name, v.Name);
+
+            -- Vanta: full "Folder/Sub/Name" path under Assets.Anims, used by
+            -- apc_fallback to tell weapon swings from mantras/movement/emotes.
+            if not animPaths[animationId] then
+                local segments, node = {}, v;
+                while node and node ~= animsFolder do
+                    table.insert(segments, 1, node.Name);
+                    node = node.Parent;
+                end;
+                animPaths[animationId] = table.concat(segments, "/");
+            end;
 
             if isMobAnim[v] then
                 mobIds[animationId] = true;
@@ -432,6 +444,17 @@ end
     function AnimatorHandler:cancel_feinted_tracks(playing_tracks)
         self.last_feint_at = tick();
 
+        -- Vanta: Feint Reaction. How long after the feint is detected before Auto
+        -- Parry reacts to it (drops the pending parry). 0 = instant (stock behaviour).
+        -- A parry due inside this window still goes out, like a human getting baited.
+        local reaction_ms = aztup.flags.feint_reaction_ms or 0;
+        local jitter_ms = aztup.flags.feint_reaction_jitter or 0;
+        if jitter_ms > 0 then
+            reaction_ms += random:NextNumber(-jitter_ms, jitter_ms);
+        end;
+        reaction_ms = math.max(0, reaction_ms);
+
+        local to_cancel = {};
         for _, track in playing_tracks do
             local state = self.running_tracks[track];
             if not state then continue end
@@ -441,11 +464,27 @@ end
 
             if state.action_type == "M1" and aztup.flags.ap_randomization and math.random() * 100 <= aztup.flags.bluff_feint_chance then
                 debug_print("[Auto Feint] Bluffing through a detected feint.");
-                continue            
+                continue
 end
 
-            self:cancel_running_track(track);
+            table.insert(to_cancel, track);
         end
+
+        if #to_cancel == 0 then return end;
+
+        if reaction_ms <= 0 then
+            for _, track in to_cancel do
+                self:cancel_running_track(track);
+            end;
+            return;
+        end;
+
+        debug_print("[Feint] Reacting in %dms.", math.floor(reaction_ms));
+        task.delay(reaction_ms / 1000, function()
+            for _, track in to_cancel do
+                self:cancel_running_track(track);
+            end;
+        end);
     end
 
     
@@ -798,6 +837,45 @@ end
         return nil    
 end
 
+    -- Vanta: Reactions (Auto Parry tab -> Reactions). Decides, per parry, whether to
+    -- parry normally or: hold block through the hit, roll instead, or fake a mistimed
+    -- parry (tap block early, then roll when the hit actually lands).
+    local function roll_reaction(self)
+        local targets = aztup_options.reaction_targets and aztup_options.reaction_targets.Value;
+        if targets and not targets[self.is_player and "PVP" or "PVE"] then
+            return "Parry"
+        end;
+
+        local block = aztup.flags.block_instead_chance or 0;
+        local dodge = aztup.flags.dodge_instead_chance or 0;
+        local miss = aztup.flags.misstime_chance or 0;
+        local total = block + dodge + miss;
+        if total <= 0 then
+            return "Parry"
+        end;
+
+        -- If the three add up to more than 100%, scale them down proportionally.
+        local scale = total > 100 and 100 / total or 1;
+        local r = random:NextNumber(0, 100);
+
+        local result = "Parry";
+        if r < block * scale then
+            result = "Block";
+        elseif r < (block + dodge) * scale then
+            result = "Dodge";
+        elseif r < (block + dodge + miss) * scale then
+            result = "Misstime";
+        end;
+
+        if (result == "Dodge" or result == "Misstime") then
+            if aztup_options.filters.Value["Dont Roll"] or not local_player.tracker:can_dodge() then
+                return "Parry"
+            end;
+        end;
+
+        return result
+    end
+
     local function fire_feint(hold_time)
         local character_handler = local_player.character:FindFirstChild("CharacterHandler");
         local feint_release = character_handler and character_handler:FindFirstChild("FeintRelease", true);
@@ -1096,6 +1174,50 @@ end;
 
             local wait_time = (time - alotted) - current_rtt
 
+            -- Vanta: Reactions. Block / Misstime need to act *before* the hit, so
+            -- they're scheduled here, ahead of the main wait.
+            local reaction = type == "Parry" and roll_reaction(self) or "Parry";
+            local reaction_early_done = false;
+
+            if reaction == "Block" or reaction == "Misstime" then
+                local lead = ((reaction == "Block" and aztup.flags.block_early_ms or aztup.flags.misstime_early_ms) or 200) / 1000;
+                local early_delay = wait_time - lead;
+
+                if wait_time ~= wait_time or wait_time < 0.12 then
+                    reaction = "Parry"; -- not enough time before the hit
+                else
+                    early_delay = math.max(0, early_delay);
+                    local actual_lead = wait_time - early_delay;
+
+                    local early_thread = task.delay(early_delay, function()
+                        if not action.ignore_early_end and not track_still_active(track, self.entity) and not ignore_anim_early_end then return end;
+                        if check_action_preconditions_auto_feint(self, track, action, data, action_type, name, index, in_hitbox) then return end;
+                        if check_action_situation_filters(self, track, action, action_type, name, index) then return end;
+
+                        DefendActionManager._current_parry_seq = (DefendActionManager._current_parry_seq or 0) + 1;
+                        local seq = DefendActionManager._current_parry_seq;
+
+                        if reaction == "Block" then
+                            local hold = (aztup.flags.block_hold_ms or 250) / 1000;
+                            DefendActionManager:add_action(self.entity, "block", tick(), seq);
+                            DefendActionManager:add_action(self.entity, "unblock", tick() + actual_lead + hold, seq);
+                            debug_print("[%s] Reaction: holding block %dms early.", name, math.floor(actual_lead * 1000));
+                        else
+                            -- Early tap (looks like a mistimed parry), released before the roll.
+                            local tap = math.min(0.1, math.max(0.03, actual_lead - 0.05));
+                            DefendActionManager:add_action(self.entity, "block", tick(), seq);
+                            DefendActionManager:add_action(self.entity, "unblock", tick() + tap, seq);
+                            debug_print("[%s] Reaction: fake misstime %dms early, rolling on hit.", name, math.floor(actual_lead * 1000));
+                        end;
+
+                        reaction_early_done = true;
+                    end);
+                    self:track_feint_thread(track, early_thread);
+                end;
+            elseif reaction == "Dodge" then
+                debug_print("[%s] Reaction: rolling instead of parrying.", name);
+            end;
+
             local notifs = {};
             if wait_time > 0 and wait_time == wait_time and wait_time < 60000 then
                     task.delay(wait_time - (1 / 15), function()
@@ -1278,6 +1400,15 @@ end;
                 end;
             end
 
+            -- Vanta: Reactions, applied at the hit.
+            if reaction == "Block" and reaction_early_done then
+                type = "Reaction Block"; -- already holding block; nothing to fire now
+            elseif reaction == "Misstime" and reaction_early_done then
+                type = "Dodge";
+            elseif reaction == "Dodge" and type == "Parry" then
+                type = "Dodge";
+            end;
+
             if aztup_options.filters.Value["Dont Roll"] and (type == "Dodge" or type == "Forced Full Dodge") then
                 debug_print("[%s] Skipping action %i, Roll is disabled.", name, index);
                 continue            
@@ -1349,14 +1480,25 @@ end;
 
         local data, pot_name = lookup_timing_data(id);
 
-        if not data then
+        if data and self.entity ~= local_player.character then
+            -- Rain's Fire/Shadow Eruption entries firing for an Ice Eruption caster.
+            local ok, override = pcall(apc_fallback.override, self.entity, pot_name or data.name);
+            if ok and override then
+                data = override;
+                pot_name = override.name;
+            end;
+        elseif not data then
             -- No exact-ID timing (custom_timings or data/base.lua) for this animation.
-            -- Fall back to APC's generic per-weapon-type windup formula instead of
-            -- dropping the swing entirely - this is the APC timing import.
-            local ok, apc_data = pcall(apc_fallback.build, self.entity);
+            -- Fall back to APC's generic per-weapon-type windup formula (only for
+            -- things that look like weapon swings; mantras are dodged or ignored).
+            local ok, apc_data, reason = pcall(apc_fallback.build, self.entity, track, animPaths[id]);
             if ok and apc_data then
                 data = apc_data;
                 pot_name = apc_data.name;
+            elseif ok and reason and self.entity ~= local_player.character and aztup.flags.apc_debug_skips then
+                debug_print("[APC] skipped %s: %s", animPaths[id] or track.Animation.Name, reason);
+            elseif not ok then
+                warn("[vanta] apc_fallback error: " .. tostring(apc_data));
             end;
         end;
 

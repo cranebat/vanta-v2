@@ -1,7 +1,7 @@
 
 return function(tab)
 
-    local pvp = tab:newGroupBox("Assistance", true);
+    local pvp = tab:newGroupBox("Assistance", false);
     
         pvp:newToggle("easy_roll_cancel", "Easy Roll Cancel", false, "Allows you to press M1 mid dash to cancel it.", nil);
     pvp:newToggleWithKeybind("auto_dustlunge", "Auto Assassination", false, "Allows you to hold M1 to attack, Doesn't follow the No Aerial Logic.", nil);
@@ -14,11 +14,11 @@ return function(tab)
 
     pvp:newToggle("m1_hold", "M1 Hold", false, "Allows you to hold M1 to attack, Doesn't follow the No Aerial Logic.", nil);
 
-    local no_stun = tab:newGroupBox("No Stun", true);
+    local no_stun = tab:newGroupBox("No Stun", false);
     no_stun:newToggle(           "fast_swing",           "Remove Weapon Endlag", false, "Removes endlag & stuff from swinging (same effect can be done with no stun)", nil);
     no_stun:newRiskyToggleWithKeybind("no_stun",              "No Stun", false, "Removes all stun from the game."); 
 
-    local attach_to_back = tab:newGroupBox("Attach to Back", true); 
+    local attach_to_back = tab:newGroupBox("Attach to Back", false); 
     attach_to_back:newToggleWithKeybind("attach_to_back", "Attach to Back", false, "Allows you to attach to the back of your target, M1/M2 to select a target.", nil);
     attach_to_back:newSlider("atb_x_offset", "X Offset", 0, -150, 150, 1, true, "s");
     attach_to_back:newSlider("atb_y_offset", "Y Offset", 0, -150, 150, 1, true, "s");
@@ -190,7 +190,7 @@ local silent_aim = tab:newGroupBox("Silent Aim", true);
         aztup_options.bi_punishable_type, "Dynamic"
     }});
 
-    local mantra_sliding = tab:newGroupBox("Mantra Slidecast");
+    local mantra_sliding = tab:newGroupBox("Mantra Slidecast", true);
     mantra_sliding:newToggleWithKeybind("mantra_slidecasting", "Mantra Slidecasting", false, "Automatically slides after doing certain actions.", nil);
     local mantra_sliding_dependency_box = mantra_sliding:newDependencyBox("mantra_slidecasting");
     mantra_sliding_dependency_box:newSlider("mantra_slidecasting_chance", "Trigger Chance", 70, 1, 100, 0, true, "%");

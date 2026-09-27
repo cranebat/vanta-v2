@@ -5,6 +5,33 @@ local sprint_keys, started_sprint, feature = {
     Enum.KeyCode.D
 }, nil, nil;
 
+-- The game's own sprint function lives in InputClient's StopSprint handler env.
+-- Cached per StopSprint remote (it changes on respawn).
+local cached_remote, cached_sprint_func, cached_stop_handler;
+local function get_sprint_funcs()
+    local character = local_player.character;
+    local character_handler = character and character:FindFirstChild("CharacterHandler");
+    local requests = character_handler and character_handler:FindFirstChild("Requests");
+    local stop_sprint = requests and requests:FindFirstChild("StopSprint");
+    if not stop_sprint then return nil end
+
+    if stop_sprint == cached_remote and cached_sprint_func then
+        return cached_sprint_func, cached_stop_handler
+    end;
+
+    for _, connection in getconnections(stop_sprint.OnClientEvent) do
+        local func = connection.Function;
+        if not func or not debug.getinfo(func).source:find("InputClient") then continue end
+
+        local sprint_func = getfenv(func).Sprint;
+        if sprint_func then
+            cached_remote, cached_sprint_func, cached_stop_handler = stop_sprint, sprint_func, func;
+            return sprint_func, func
+        end;
+    end;
+
+    return nil
+end
 
 feature = Feature:new("auto_sprint", services.UserInputService.InputBegan, LPH_NO_VIRTUALIZE(function(input: InputObject, gp: boolean)
     if gp or not table.find(sprint_keys, input.KeyCode) or started_sprint then return end
@@ -14,24 +41,19 @@ feature = Feature:new("auto_sprint", services.UserInputService.InputBegan, LPH_N
     task.delay(aztup.flags.auto_sprint_delay, function()
         if not started_sprint then return end
 
-        local character_handler = local_player.character:FindFirstChild("CharacterHandler");
-        local requests = character_handler and character_handler:FindFirstChild("Requests");
-        local stop_sprint = requests and requests:FindFirstChild("StopSprint");
-        if not stop_sprint then return end
+        local sprint_func = get_sprint_funcs();
+        if not sprint_func then return end
 
-        for _, connection in getconnections(stop_sprint.OnClientEvent) do
-            local func = connection.Function;
-            if not debug.getinfo(func).source:find("InputClient") then continue end
-        
-            local sprint_func = getfenv(func).Sprint;
-            while local_player.humanoid.MoveDirection.Magnitude >= 0.1 do
-
-                if not EffectReplicator:FindEffect("Sprinting") and not EffectReplicator:FindEffect("ClientCrouch") then
-                    sprint_func(true);
-                end;
-
-                task.wait();
+        while local_player.humanoid.MoveDirection.Magnitude >= 0.1 do
+            -- Vanta: No Running Attacks pauses auto sprint for a moment after each M1.
+            if tick() >= (feature.resume_at or 0)
+                and not EffectReplicator:FindEffect("Sprinting")
+                and not EffectReplicator:FindEffect("ClientCrouch")
+            then
+                sprint_func(true);
             end;
+
+            task.wait();
         end;
     end);
 
@@ -40,9 +62,41 @@ feature = Feature:new("auto_sprint", services.UserInputService.InputBegan, LPH_N
         if local_player.humanoid.MoveDirection.Magnitude <= 0.1 then
             started_sprint = false;
             move_direction_conn:Disconnect();
-            return        
+            return
 end
     end);
 end))
+
+--[[
+    Vanta: No Running Attacks (Automation -> Options).
+
+    Used by the LeftClick hook in features/hooking.lua. When you M1 while sprinting,
+    the click is held back, sprint is stopped, and the click is sent once the game
+    confirms you're no longer sprinting - so you get a normal M1, not a running attack.
+    Auto sprint then stays paused for "Resume Sprint After" so it doesn't kick back in
+    mid-combo. Works whether the sprint came from auto sprint or from you.
+]]
+feature.resume_at = 0;
+feature.m1_pending = false;
+
+function feature.pause_for_m1()
+    feature.resume_at = tick() + (aztup.flags.no_running_resume_ms or 500) / 1000;
+end
+
+function feature.stop_sprinting()
+    feature.pause_for_m1();
+
+    local sprint_func, stop_handler = get_sprint_funcs();
+    if sprint_func then
+        pcall(sprint_func, false);
+    end;
+
+    -- If Sprint(false) didn't do it, run the game's own StopSprint handler.
+    task.delay(1 / 30, function()
+        if stop_handler and EffectReplicator:FindEffect("Sprinting") then
+            pcall(stop_handler);
+        end;
+    end);
+end
 
 return feature

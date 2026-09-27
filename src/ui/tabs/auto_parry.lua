@@ -189,7 +189,39 @@ return function(tab)
         aztup_toggles.basic_validation, true
     }});
 
-    local randomization_dependency_box = ap_main:newDependencyBox("ap_randomization");
+    -- Vanta: right-hand column. Reactions (new), Humanization, PVE, PVP used to all be
+    -- stacked in the left tabbox, leaving the right side nearly empty.
+    local reactions_tabbox = tab:newTabbox("Reactions", true);
+    local reactions = reactions_tabbox:newTab("Reactions");
+
+    reactions:newDropdown("reaction_targets", "Apply Reactions To", { "PVP", "PVE" }, { "PVP", "PVE" }, true,
+        "Which fights the block / roll / misstime reactions below are used in.");
+
+    reactions:newSlider("feint_reaction_ms", "Feint Reaction", 0, 0, 400, 0, true, "ms", nil,
+        "How long after an enemy feints before Auto Parry reacts and drops the parry. 0 = instant. A parry due inside this window still goes out (you get baited, like a person would).");
+    reactions:newSlider("feint_reaction_jitter", "Feint Reaction Jitter", 0, 0, 150, 0, true, "ms", nil,
+        "Random +/- added to Feint Reaction each time.");
+    reactions:newDivider();
+
+    reactions:newSlider("block_instead_chance", "Block Instead Of Parry", 0, 0, 100, 0, true, "%", nil,
+        "Chance to hold block through the hit instead of parrying.");
+    reactions:newSlider("block_early_ms", "Block Early By", 200, 60, 500, 0, true, "ms", nil,
+        "How long before the hit to start holding block (too late and it becomes a parry).");
+    reactions:newSlider("block_hold_ms", "Block Hold After Hit", 250, 50, 800, 0, true, "ms", nil,
+        "How long to keep holding block after the hit.");
+    reactions:newDivider();
+
+    reactions:newSlider("dodge_instead_chance", "Dodge Instead Of Parry", 0, 0, 100, 0, true, "%", nil,
+        "Chance to roll instead of parrying (only when a roll is available).");
+    reactions:newDivider();
+
+    reactions:newSlider("misstime_chance", "Fake Misstime Parry", 0, 0, 100, 0, true, "%", nil,
+        "Chance to tap block early (looks like a mistimed parry), then roll when the hit actually lands.");
+    reactions:newSlider("misstime_early_ms", "Misstime Early By", 220, 150, 500, 0, true, "ms", nil,
+        "How long before the hit the fake parry tap happens.");
+
+    local randomization_dependency_box = reactions_tabbox:newTab("Humanize"):newDependencyBox("ap_randomization");
+    randomization_dependency_box:newLabel("Turn on Humanization (Main tab) to use these.", true);
 
     randomization_dependency_box:newSlider("parry_to_dodge_chance_undefined",    "Force Dodge Chance (Untagged)", 0, 0, 100, 1, true, "%");
     randomization_dependency_box:newSlider("parry_to_dodge_chance_spells",      "Force Dodge Chance (Spells)", 0, 0, 100, 1, true, "%");
@@ -226,8 +258,25 @@ return function(tab)
         
     end
 
-    create_settings_page(autoparry_tabbox:newTab("PVE"), "pve_")
-    create_settings_page(autoparry_tabbox:newTab("PVP"), "pvp_")
+    create_settings_page(reactions_tabbox:newTab("PVE"), "pve_")
+    create_settings_page(reactions_tabbox:newTab("PVP"), "pvp_")
+
+    -- Vanta: APC fallback timings (weapon swings with no exact timing).
+    local apc = autoparry_tabbox:newTab("APC");
+    apc:newToggle("apc_fallback_enabled", "APC Fallback Timings", true,
+        "Parry untimed weapon swings using APC's per-weapon windup formulas.");
+    apc:newSlider("apc_timing_offset", "APC Timing Offset", 0, -150, 150, 0, true, "ms", nil,
+        "Shift every APC fallback parry earlier (-) or later (+).");
+    apc:newDivider();
+    apc:newSlider("unparriable_dodge_offset", "Unparriable Dodge Offset", 0, -200, 200, 0, true, "ms", nil,
+        "Shift the dodge for unparriable moves (Ice Eruption, Tornado) earlier (-) or later (+).");
+    apc:newDropdown("unknown_mantra_mode", "Untimed Mantras", { "Ignore", "Dodge" }, "Ignore", false,
+        "Mantras with no timing: ignore them, or roll after the delay below if in range.");
+    apc:newSlider("unknown_mantra_dodge_delay", "Untimed Mantra Dodge Delay", 450, 100, 1500, 0, true, "ms");
+    apc:newSlider("unknown_mantra_range", "Untimed Mantra Range", 40, 10, 150, 0, true, " studs");
+    apc:newDivider();
+    apc:newToggle("apc_debug_skips", "Debug Skipped Anims", false,
+        "With Debug Notifications on, also show animations the fallback ignored and why.");
 
 
     local other = autoparry_tabbox:newTab("Other");

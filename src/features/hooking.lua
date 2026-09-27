@@ -486,9 +486,47 @@ end;
             self == KeyHandler:get_cache(STR_TBL_SF_INVOKE("OffhandAttack")) and aztup_options.blocked_safe_input_user_moves.Value.M2s or
             self == KeyHandler:get_cache(STR_TBL_SF_INVOKE("LeftClick")) and aztup_options.blocked_safe_input_user_moves.Value.M1s
         ) and BlockInputManager:should_block_input() then
-            return        
+            return
 end;
     end
+
+    -- Vanta: No Running Attacks. Only your own clicks (not script-fired ones like
+    -- auto dustlunge). See features/automation/auto_sprint.lua.
+    if aztup and aztup.flags and aztup.flags.no_running_attacks and self
+        and not checkcaller()
+        and self == KeyHandler:get_cache(STR_TBL_SF_INVOKE("LeftClick"))
+    then
+        local sprint = aztup.features and aztup.features.auto_sprint;
+        if sprint and sprint.stop_sprinting then
+            if EffectReplicator and EffectReplicator:FindEffect("Sprinting") then
+                if sprint.m1_pending then
+                    return; -- one click is already waiting; drop autoclicker spam
+                end;
+
+                sprint.m1_pending = true;
+                local args = table.pack(...);
+                sprint.stop_sprinting();
+
+                task.spawn(function()
+                    local deadline = tick() + (aztup.flags.no_running_max_delay or 150) / 1000;
+                    while EffectReplicator:FindEffect("Sprinting") and tick() < deadline do
+                        task.wait();
+                    end;
+                    task.wait();
+                    sprint.m1_pending = false;
+
+                    if aztup.flags.block_input and aztup_options.blocked_safe_input_user_moves.Value.M1s and BlockInputManager:should_block_input() then
+                        return;
+                    end;
+
+                    old_fireserver(self, table.unpack(args, 1, args.n));
+                end);
+                return;
+            end;
+
+            sprint.pause_for_m1();
+        end;
+    end;
 
     return old_fireserver(self, ...)
 end));

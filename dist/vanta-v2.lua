@@ -13892,45 +13892,196 @@ modules["@src/features/auto-parry/data/apc_fallback"] = function()
     apc_fallback.lua
 
     Generic per-weapon-type Auto Parry timing, ported from APC (Lycoris Rewrite)'s
-    WeaponTest.lua windup formulas.
+    WeaponTest.lua windup formulas. Used by animator-handler.lua when an animation has
+    no exact-ID timing (custom_timings / data/base.lua).
 
-    Project Rain's own data/base.lua only covers named, per-exact-animation-ID moves
-    (mantras, spells, bosses - 129 hardcoded entries). Ordinary weapon M1 swings aren't
-    in there at all (that table was the "Timings" data Rain stripped from the OSS
-    release). This module is what actually "imports APC timings into Project Rain":
-    when animator-handler.lua can't find an exact-ID match, it calls apc_fallback.build()
-    instead of giving up, and gets back a normal PR timing-data table (with a `run`
-    function) built from APC's live track.Speed + weapon.type formulas.
+    v2 (Vanta): the fallback used to run on *every* untimed animation played by anyone
+    holding a weapon, so mantra casts (e.g. Ice Eruption), emotes, movement etc. were
+    treated as an M1 swing and parried. It now classifies the animation first:
 
-    Ported 1:1 from APC's WeaponTest.lua where the formula is a plain function of
-    (track.Speed, weapon.ss). Not ported (on purpose, see README/notes to the user):
-      - APC's own hitbox/prediction/blockfollow tuning (timing.pbfb, timing.htype,
-        timing.pfht, etc.) - those are knobs on APC's *own* defender engine and have
-        no equivalent field on PR's action/hitbox contract.
-      - The busy-wait sub-branches (Pistol "Shot", Rifle "2", Bow spark-wait) that block
-        on task.wait() until track.Speed changes or a part appears. PR calls `data.run`
-        synchronously off the animation-played hot path with a task concurrency limiter;
-        blocking there for multiple frames per enemy is a real stall risk, so those
-        variants fall back to the plain per-type formula instead of the exact sub-case.
-      - The Evengarde / Titus boss-specific special-cased loops (self:action spam,
-        M1-windup-only-once-per-4s guards) - narrow boss workarounds, not general timings.
-    All of the above are individually portable later if they turn out to matter; they
-    were deliberately left out for now since "other stuff is less important" per the
-    brief - this file is only the generic per-weapon windup.
+      1. Known mantra (matched against mantras.json, e.g. "Eruption:Ice" -> anim
+         path/name containing "eruptionice" / "iceeruption"):
+           - listed in UNPARRIABLE below  -> Dodge at that timing
+           - otherwise, "Unknown Mantras" setting: Ignore (default) or Dodge
+         A mantra is never parried by the M1 formula any more.
+      2. Anything whose path looks like a non-attack (movement, emotes, idle, ...)
+         -> ignored.
+      3. Everything else -> APC weapon windup formula (unchanged), plus the
+         "APC Timing Offset" slider.
+
+    Not ported from WeaponTest.lua (busy-wait sub-cases that would stall the hot path):
+    Pistol "Shot", Rifle "2", Bow spark-wait, Titus/Evengarde boss specials.
 ]]
 
 local weapon = require("@src/features/auto-parry/data/weapon");
 
 local apc_fallback = {};
 
--- entity: the Character whose weapon/track we're evaluating.
--- Returns a PR-shaped timing `data` table (see data/base.lua for the shape), or nil if
--- APC has no formula for this entity's current weapon (no weapon equipped, or a type
--- APC itself doesn't cover, e.g. thrown/unarmed edge cases).
-function apc_fallback.build(entity)
+--------------------------------------------------------------------------- mantras
+
+-- Unparriable mantras -> dodge. Timings are from the original Vanta build's named
+-- table ("Eruption" 550ms dodge, "Tornado" 400ms dodge); they are NOT verified
+-- in-game - tune with the "Unparriable Dodge Offset" slider.
+local UNPARRIABLE = {
+    ["Ice Eruption"] = { when = 0.55, size = 60 },
+    ["Tornado"]      = { when = 0.40, size = 40 },
+};
+apc_fallback.UNPARRIABLE = UNPARRIABLE;
+
+-- mantras.json: { ["Eruption:Ice"] = "Ice Eruption", ... }
+local mantra_patterns = {}; -- { {needle, display}, ... }
+do
+    local ok, list = pcall(require, "@src/features/removals/mantra_revealer/mantras");
+    if ok and typeof(list) == "table" then
+        for key, display in list do
+            local skill, element = key:match("^(.-):(.+)$");
+            if skill and element then
+                local s, e = skill:lower(), element:lower();
+                local compact = (display:lower():gsub("[^%w]", ""));
+                table.insert(mantra_patterns, { s .. e, display });
+                table.insert(mantra_patterns, { e .. s, display });
+                table.insert(mantra_patterns, { compact, display });
+            end;
+        end;
+        -- Longest needle first so the most specific match wins.
+        table.sort(mantra_patterns, function(a, b) return #a[1] > #b[1] end);
+    end;
+end;
+
+-- Matched against the *start* of each path segment / name word, so "controllers"
+-- doesn't count as "roll" etc.
+local NON_ATTACK_WORDS = {
+    "mantra", "spell", "movement", "emote", "gesture", "idle", "climb", "swim",
+    "carry", "walk", "sprint", "crouch", "ragdoll", "knocked", "parried", "blocking",
+    "roll", "wallrun", "vault", "execute", "eruption", "cast",
+};
+
+local function describe(track, path)
+    local raw = { path or "" };
+    local anim = track and track.Animation;
+    if anim then
+        table.insert(raw, anim.Name);
+        -- Only use the full location when it's game assets; otherwise just the
+        -- parent's name (e.g. the mantra tool) so player names never get matched.
+        local ok, full = pcall(anim.GetFullName, anim);
+        if ok and full:find("^ReplicatedStorage") then
+            table.insert(raw, full);
+        elseif anim.Parent and not anim.Parent:IsA("Model") then
+            table.insert(raw, anim.Parent.Name);
+        end;
+    end;
+
+    local text = table.concat(raw, " ");
+    local tokens = {};
+    for word in text:gmatch("[^%s_%-%.:/{}]+") do
+        table.insert(tokens, word:lower());
+    end;
+    return table.concat(tokens), tokens;
+end
+
+local function identify_mantra(joined)
+    for _, p in mantra_patterns do
+        if #p[1] >= 6 and joined:find(p[1], 1, true) then
+            return p[2];
+        end;
+    end;
+    return nil;
+end
+
+local function dodge_data(name, when, size)
+    return {
+        source = "apc_fallback",
+        action_type = "Spell",
+        name = name,
+        run = function(action)
+            action.when = math.max(0, when + ((aztup.flags.unparriable_dodge_offset or 0) / 1000));
+            action.type = "Dodge";
+            action.shape = "ball";
+            action.hitbox = Vector3.new(size, size, size);
+            action.name = name .. " (dodge)";
+            action:push();
+        end,
+    };
+end
+
+-- Rain's Fire/Shadow Eruption entries: if the caster only owns Ice Eruption (so it
+-- can't be the move that entry is for), swap in the Ice Eruption dodge.
+local ERUPTION_OWNERS = {
+    ["FireEruption"] = "Mantra:EruptionFire{{Fire Eruption}}",
+    ["ShadowEruption-Generic"] = "Mantra:EruptionShadow{{Shadow Eruption}}",
+};
+
+function apc_fallback.override(entity, entry_name)
+    local own = entry_name and ERUPTION_OWNERS[entry_name];
+    if not own then return nil end;
+
+    local player = game:GetService("Players"):GetPlayerFromCharacter(entity);
+    local backpack = player and player:FindFirstChild("Backpack");
+    if not backpack then return nil end;
+
+    if backpack:FindFirstChild("Mantra:EruptionIce{{Ice Eruption}}") and not backpack:FindFirstChild(own) then
+        local r = UNPARRIABLE["Ice Eruption"];
+        return dodge_data("Ice Eruption", r.when, r.size);
+    end;
+    return nil;
+end
+
+--------------------------------------------------------------------------- build
+
+-- entity: attacker. track: the AnimationTrack. path: "Folder/Sub/AnimName" under
+-- ReplicatedStorage.Assets.Anims if the id is known there (else nil).
+-- Returns (data, reason): data is a PR timing table or nil; reason is for debug.
+function apc_fallback.build(entity, track, path)
+    if aztup.flags.apc_fallback_enabled == false then
+        return nil, "APC fallback off";
+    end;
+
+    local joined, tokens = describe(track, path);
+
+    local mantra = identify_mantra(joined);
+    if mantra then
+        local rule = UNPARRIABLE[mantra];
+        if rule then
+            return dodge_data(mantra, rule.when, rule.size);
+        end;
+
+        local mode = aztup_options and aztup_options.unknown_mantra_mode and aztup_options.unknown_mantra_mode.Value;
+        if mode == "Dodge" then
+            return dodge_data(mantra, (aztup.flags.unknown_mantra_dodge_delay or 450) / 1000, aztup.flags.unknown_mantra_range or 40);
+        end;
+        return nil, "untimed mantra: " .. mantra;
+    end;
+
+    -- Generic "eruption" anim with no element in its name: if the caster's only
+    -- eruption mantra is Ice Eruption, it's that.
+    if joined:find("eruption", 1, true) then
+        local player = game:GetService("Players"):GetPlayerFromCharacter(entity);
+        local backpack = player and player:FindFirstChild("Backpack");
+        if backpack and backpack:FindFirstChild("Mantra:EruptionIce{{Ice Eruption}}") then
+            local others = 0;
+            for _, tool in backpack:GetChildren() do
+                if tool.Name:find("^Mantra:Eruption") and tool.Name ~= "Mantra:EruptionIce{{Ice Eruption}}" then
+                    others += 1;
+                end;
+            end;
+            if others == 0 then
+                local r = UNPARRIABLE["Ice Eruption"];
+                return dodge_data("Ice Eruption", r.when, r.size);
+            end;
+        end;
+    end;
+
+    for _, token in tokens do
+        for _, word in NON_ATTACK_WORDS do
+            if token:sub(1, #word) == word then
+                return nil, "not an attack (" .. token .. ")";
+            end;
+        end;
+    end;
+
     local w = weapon.data(entity);
     if not w or not w.type then
-        return nil;
+        return nil, "no weapon";
     end;
 
     return {
@@ -13988,6 +14139,8 @@ function apc_fallback.build(entity)
             if not windup or windup ~= windup or windup == math.huge then
                 return;
             end;
+
+            windup = math.max(0, windup + ((aztup.flags.apc_timing_offset or 0) / 1000));
 
             local length = w.length or 4;
             action.when = windup;
@@ -21211,6 +21364,7 @@ return LPH_NO_VIRTUALIZE(function()
     local self_anim_data = {};  
 
     local allAnimations = {};
+    local animPaths = {};
     local mobsAnims = {};
     do
         local animsFolder = services.ReplicatedStorage:WaitForChild("Assets"):WaitForChild("Anims");
@@ -21236,6 +21390,17 @@ return LPH_NO_VIRTUALIZE(function()
             if not animationId then continue end;
 
             allAnimations[animationId] = format('%s-%s', v.Parent.Name, v.Name);
+
+            -- Vanta: full "Folder/Sub/Name" path under Assets.Anims, used by
+            -- apc_fallback to tell weapon swings from mantras/movement/emotes.
+            if not animPaths[animationId] then
+                local segments, node = {}, v;
+                while node and node ~= animsFolder do
+                    table.insert(segments, 1, node.Name);
+                    node = node.Parent;
+                end;
+                animPaths[animationId] = table.concat(segments, "/");
+            end;
 
             if isMobAnim[v] then
                 mobIds[animationId] = true;
@@ -21527,6 +21692,17 @@ end
     function AnimatorHandler:cancel_feinted_tracks(playing_tracks)
         self.last_feint_at = tick();
 
+        -- Vanta: Feint Reaction. How long after the feint is detected before Auto
+        -- Parry reacts to it (drops the pending parry). 0 = instant (stock behaviour).
+        -- A parry due inside this window still goes out, like a human getting baited.
+        local reaction_ms = aztup.flags.feint_reaction_ms or 0;
+        local jitter_ms = aztup.flags.feint_reaction_jitter or 0;
+        if jitter_ms > 0 then
+            reaction_ms += random:NextNumber(-jitter_ms, jitter_ms);
+        end;
+        reaction_ms = math.max(0, reaction_ms);
+
+        local to_cancel = {};
         for _, track in playing_tracks do
             local state = self.running_tracks[track];
             if not state then continue end
@@ -21536,11 +21712,27 @@ end
 
             if state.action_type == "M1" and aztup.flags.ap_randomization and math.random() * 100 <= aztup.flags.bluff_feint_chance then
                 debug_print("[Auto Feint] Bluffing through a detected feint.");
-                continue            
+                continue
 end
 
-            self:cancel_running_track(track);
+            table.insert(to_cancel, track);
         end
+
+        if #to_cancel == 0 then return end;
+
+        if reaction_ms <= 0 then
+            for _, track in to_cancel do
+                self:cancel_running_track(track);
+            end;
+            return;
+        end;
+
+        debug_print("[Feint] Reacting in %dms.", math.floor(reaction_ms));
+        task.delay(reaction_ms / 1000, function()
+            for _, track in to_cancel do
+                self:cancel_running_track(track);
+            end;
+        end);
     end
 
     
@@ -21893,6 +22085,45 @@ end
         return nil    
 end
 
+    -- Vanta: Reactions (Auto Parry tab -> Reactions). Decides, per parry, whether to
+    -- parry normally or: hold block through the hit, roll instead, or fake a mistimed
+    -- parry (tap block early, then roll when the hit actually lands).
+    local function roll_reaction(self)
+        local targets = aztup_options.reaction_targets and aztup_options.reaction_targets.Value;
+        if targets and not targets[self.is_player and "PVP" or "PVE"] then
+            return "Parry"
+        end;
+
+        local block = aztup.flags.block_instead_chance or 0;
+        local dodge = aztup.flags.dodge_instead_chance or 0;
+        local miss = aztup.flags.misstime_chance or 0;
+        local total = block + dodge + miss;
+        if total <= 0 then
+            return "Parry"
+        end;
+
+        -- If the three add up to more than 100%, scale them down proportionally.
+        local scale = total > 100 and 100 / total or 1;
+        local r = random:NextNumber(0, 100);
+
+        local result = "Parry";
+        if r < block * scale then
+            result = "Block";
+        elseif r < (block + dodge) * scale then
+            result = "Dodge";
+        elseif r < (block + dodge + miss) * scale then
+            result = "Misstime";
+        end;
+
+        if (result == "Dodge" or result == "Misstime") then
+            if aztup_options.filters.Value["Dont Roll"] or not local_player.tracker:can_dodge() then
+                return "Parry"
+            end;
+        end;
+
+        return result
+    end
+
     local function fire_feint(hold_time)
         local character_handler = local_player.character:FindFirstChild("CharacterHandler");
         local feint_release = character_handler and character_handler:FindFirstChild("FeintRelease", true);
@@ -22191,6 +22422,50 @@ end;
 
             local wait_time = (time - alotted) - current_rtt
 
+            -- Vanta: Reactions. Block / Misstime need to act *before* the hit, so
+            -- they're scheduled here, ahead of the main wait.
+            local reaction = type == "Parry" and roll_reaction(self) or "Parry";
+            local reaction_early_done = false;
+
+            if reaction == "Block" or reaction == "Misstime" then
+                local lead = ((reaction == "Block" and aztup.flags.block_early_ms or aztup.flags.misstime_early_ms) or 200) / 1000;
+                local early_delay = wait_time - lead;
+
+                if wait_time ~= wait_time or wait_time < 0.12 then
+                    reaction = "Parry"; -- not enough time before the hit
+                else
+                    early_delay = math.max(0, early_delay);
+                    local actual_lead = wait_time - early_delay;
+
+                    local early_thread = task.delay(early_delay, function()
+                        if not action.ignore_early_end and not track_still_active(track, self.entity) and not ignore_anim_early_end then return end;
+                        if check_action_preconditions_auto_feint(self, track, action, data, action_type, name, index, in_hitbox) then return end;
+                        if check_action_situation_filters(self, track, action, action_type, name, index) then return end;
+
+                        DefendActionManager._current_parry_seq = (DefendActionManager._current_parry_seq or 0) + 1;
+                        local seq = DefendActionManager._current_parry_seq;
+
+                        if reaction == "Block" then
+                            local hold = (aztup.flags.block_hold_ms or 250) / 1000;
+                            DefendActionManager:add_action(self.entity, "block", tick(), seq);
+                            DefendActionManager:add_action(self.entity, "unblock", tick() + actual_lead + hold, seq);
+                            debug_print("[%s] Reaction: holding block %dms early.", name, math.floor(actual_lead * 1000));
+                        else
+                            -- Early tap (looks like a mistimed parry), released before the roll.
+                            local tap = math.min(0.1, math.max(0.03, actual_lead - 0.05));
+                            DefendActionManager:add_action(self.entity, "block", tick(), seq);
+                            DefendActionManager:add_action(self.entity, "unblock", tick() + tap, seq);
+                            debug_print("[%s] Reaction: fake misstime %dms early, rolling on hit.", name, math.floor(actual_lead * 1000));
+                        end;
+
+                        reaction_early_done = true;
+                    end);
+                    self:track_feint_thread(track, early_thread);
+                end;
+            elseif reaction == "Dodge" then
+                debug_print("[%s] Reaction: rolling instead of parrying.", name);
+            end;
+
             local notifs = {};
             if wait_time > 0 and wait_time == wait_time and wait_time < 60000 then
                     task.delay(wait_time - (1 / 15), function()
@@ -22373,6 +22648,15 @@ end;
                 end;
             end
 
+            -- Vanta: Reactions, applied at the hit.
+            if reaction == "Block" and reaction_early_done then
+                type = "Reaction Block"; -- already holding block; nothing to fire now
+            elseif reaction == "Misstime" and reaction_early_done then
+                type = "Dodge";
+            elseif reaction == "Dodge" and type == "Parry" then
+                type = "Dodge";
+            end;
+
             if aztup_options.filters.Value["Dont Roll"] and (type == "Dodge" or type == "Forced Full Dodge") then
                 debug_print("[%s] Skipping action %i, Roll is disabled.", name, index);
                 continue            
@@ -22444,14 +22728,25 @@ end;
 
         local data, pot_name = lookup_timing_data(id);
 
-        if not data then
+        if data and self.entity ~= local_player.character then
+            -- Rain's Fire/Shadow Eruption entries firing for an Ice Eruption caster.
+            local ok, override = pcall(apc_fallback.override, self.entity, pot_name or data.name);
+            if ok and override then
+                data = override;
+                pot_name = override.name;
+            end;
+        elseif not data then
             -- No exact-ID timing (custom_timings or data/base.lua) for this animation.
-            -- Fall back to APC's generic per-weapon-type windup formula instead of
-            -- dropping the swing entirely - this is the APC timing import.
-            local ok, apc_data = pcall(apc_fallback.build, self.entity);
+            -- Fall back to APC's generic per-weapon-type windup formula (only for
+            -- things that look like weapon swings; mantras are dodged or ignored).
+            local ok, apc_data, reason = pcall(apc_fallback.build, self.entity, track, animPaths[id]);
             if ok and apc_data then
                 data = apc_data;
                 pot_name = apc_data.name;
+            elseif ok and reason and self.entity ~= local_player.character and aztup.flags.apc_debug_skips then
+                debug_print("[APC] skipped %s: %s", animPaths[id] or track.Animation.Name, reason);
+            elseif not ok then
+                warn("[vanta] apc_fallback error: " .. tostring(apc_data));
             end;
         end;
 
@@ -24094,6 +24389,33 @@ local sprint_keys, started_sprint, feature = {
     Enum.KeyCode.D
 }, nil, nil;
 
+-- The game's own sprint function lives in InputClient's StopSprint handler env.
+-- Cached per StopSprint remote (it changes on respawn).
+local cached_remote, cached_sprint_func, cached_stop_handler;
+local function get_sprint_funcs()
+    local character = local_player.character;
+    local character_handler = character and character:FindFirstChild("CharacterHandler");
+    local requests = character_handler and character_handler:FindFirstChild("Requests");
+    local stop_sprint = requests and requests:FindFirstChild("StopSprint");
+    if not stop_sprint then return nil end
+
+    if stop_sprint == cached_remote and cached_sprint_func then
+        return cached_sprint_func, cached_stop_handler
+    end;
+
+    for _, connection in getconnections(stop_sprint.OnClientEvent) do
+        local func = connection.Function;
+        if not func or not debug.getinfo(func).source:find("InputClient") then continue end
+
+        local sprint_func = getfenv(func).Sprint;
+        if sprint_func then
+            cached_remote, cached_sprint_func, cached_stop_handler = stop_sprint, sprint_func, func;
+            return sprint_func, func
+        end;
+    end;
+
+    return nil
+end
 
 feature = Feature:new("auto_sprint", services.UserInputService.InputBegan, LPH_NO_VIRTUALIZE(function(input: InputObject, gp: boolean)
     if gp or not table.find(sprint_keys, input.KeyCode) or started_sprint then return end
@@ -24103,24 +24425,19 @@ feature = Feature:new("auto_sprint", services.UserInputService.InputBegan, LPH_N
     task.delay(aztup.flags.auto_sprint_delay, function()
         if not started_sprint then return end
 
-        local character_handler = local_player.character:FindFirstChild("CharacterHandler");
-        local requests = character_handler and character_handler:FindFirstChild("Requests");
-        local stop_sprint = requests and requests:FindFirstChild("StopSprint");
-        if not stop_sprint then return end
+        local sprint_func = get_sprint_funcs();
+        if not sprint_func then return end
 
-        for _, connection in getconnections(stop_sprint.OnClientEvent) do
-            local func = connection.Function;
-            if not debug.getinfo(func).source:find("InputClient") then continue end
-        
-            local sprint_func = getfenv(func).Sprint;
-            while local_player.humanoid.MoveDirection.Magnitude >= 0.1 do
-
-                if not EffectReplicator:FindEffect("Sprinting") and not EffectReplicator:FindEffect("ClientCrouch") then
-                    sprint_func(true);
-                end;
-
-                task.wait();
+        while local_player.humanoid.MoveDirection.Magnitude >= 0.1 do
+            -- Vanta: No Running Attacks pauses auto sprint for a moment after each M1.
+            if tick() >= (feature.resume_at or 0)
+                and not EffectReplicator:FindEffect("Sprinting")
+                and not EffectReplicator:FindEffect("ClientCrouch")
+            then
+                sprint_func(true);
             end;
+
+            task.wait();
         end;
     end);
 
@@ -24129,10 +24446,42 @@ feature = Feature:new("auto_sprint", services.UserInputService.InputBegan, LPH_N
         if local_player.humanoid.MoveDirection.Magnitude <= 0.1 then
             started_sprint = false;
             move_direction_conn:Disconnect();
-            return        
+            return
 end
     end);
 end))
+
+--[[
+    Vanta: No Running Attacks (Automation -> Options).
+
+    Used by the LeftClick hook in features/hooking.lua. When you M1 while sprinting,
+    the click is held back, sprint is stopped, and the click is sent once the game
+    confirms you're no longer sprinting - so you get a normal M1, not a running attack.
+    Auto sprint then stays paused for "Resume Sprint After" so it doesn't kick back in
+    mid-combo. Works whether the sprint came from auto sprint or from you.
+]]
+feature.resume_at = 0;
+feature.m1_pending = false;
+
+function feature.pause_for_m1()
+    feature.resume_at = tick() + (aztup.flags.no_running_resume_ms or 500) / 1000;
+end
+
+function feature.stop_sprinting()
+    feature.pause_for_m1();
+
+    local sprint_func, stop_handler = get_sprint_funcs();
+    if sprint_func then
+        pcall(sprint_func, false);
+    end;
+
+    -- If Sprint(false) didn't do it, run the game's own StopSprint handler.
+    task.delay(1 / 30, function()
+        if stop_handler and EffectReplicator:FindEffect("Sprinting") then
+            pcall(stop_handler);
+        end;
+    end);
+end
 
 return feature
 end;
@@ -27969,9 +28318,47 @@ end;
             self == KeyHandler:get_cache(STR_TBL_SF_INVOKE("OffhandAttack")) and aztup_options.blocked_safe_input_user_moves.Value.M2s or
             self == KeyHandler:get_cache(STR_TBL_SF_INVOKE("LeftClick")) and aztup_options.blocked_safe_input_user_moves.Value.M1s
         ) and BlockInputManager:should_block_input() then
-            return        
+            return
 end;
     end
+
+    -- Vanta: No Running Attacks. Only your own clicks (not script-fired ones like
+    -- auto dustlunge). See features/automation/auto_sprint.lua.
+    if aztup and aztup.flags and aztup.flags.no_running_attacks and self
+        and not checkcaller()
+        and self == KeyHandler:get_cache(STR_TBL_SF_INVOKE("LeftClick"))
+    then
+        local sprint = aztup.features and aztup.features.auto_sprint;
+        if sprint and sprint.stop_sprinting then
+            if EffectReplicator and EffectReplicator:FindEffect("Sprinting") then
+                if sprint.m1_pending then
+                    return; -- one click is already waiting; drop autoclicker spam
+                end;
+
+                sprint.m1_pending = true;
+                local args = table.pack(...);
+                sprint.stop_sprinting();
+
+                task.spawn(function()
+                    local deadline = tick() + (aztup.flags.no_running_max_delay or 150) / 1000;
+                    while EffectReplicator:FindEffect("Sprinting") and tick() < deadline do
+                        task.wait();
+                    end;
+                    task.wait();
+                    sprint.m1_pending = false;
+
+                    if aztup.flags.block_input and aztup_options.blocked_safe_input_user_moves.Value.M1s and BlockInputManager:should_block_input() then
+                        return;
+                    end;
+
+                    old_fireserver(self, table.unpack(args, 1, args.n));
+                end);
+                return;
+            end;
+
+            sprint.pause_for_m1();
+        end;
+    end;
 
     return old_fireserver(self, ...)
 end));
@@ -43117,7 +43504,7 @@ function Appearance.build(ui_tab)
     local saved_font = isfile(FONT_SAVE_FILE) and readfile(FONT_SAVE_FILE) or "Lexend";
     if not families[saved_font] then saved_font = "Lexend" end;
 
-    local box = ui_tab:newGroupBox("Appearance", true);
+    local box = ui_tab:newGroupBox("Appearance", false);
 
     box:newToggle("edge_glow", "Edge Glow", glow.enabled, "Soft glow around the window border in your accent colour.", function(on)
         glow.enabled = on;
@@ -43423,6 +43810,12 @@ function automation:make_general()
         "Legit"
     }, "Blatant", false, "Should auto golden tongue be used blatantly (no message), or send a legit message (W/A/S/D)?.");
     options:newSlider("auto_sprint_delay",        "Sprint Delay", 0, 0, 1, 1);
+    options:newToggle("no_running_attacks", "No Running Attacks", false,
+        "When you M1 while sprinting, stops the sprint first so you get a normal M1 instead of a running attack. Auto Sprint pauses briefly after each M1.");
+    options:newSlider("no_running_resume_ms", "Resume Sprint After", 500, 100, 2000, 0, true, "ms", nil,
+        "How long Auto Sprint stays off after your last M1.");
+    options:newSlider("no_running_max_delay", "Max M1 Delay", 150, 30, 400, 0, true, "ms", nil,
+        "Longest your M1 is held back while waiting for the sprint to stop.");
     options:newSlider("auto_wisp_delay",          "Wisp Delay", 0, 0, 1, 1);
     options:newKeybind("hide_sprint_state_bind", "Hide Auto Sprint State (hold)", 'None', function(on)
         aztup.features.auto_sprint.hide_held = on;
@@ -44426,7 +44819,39 @@ return function(tab)
         aztup_toggles.basic_validation, true
     }});
 
-    local randomization_dependency_box = ap_main:newDependencyBox("ap_randomization");
+    -- Vanta: right-hand column. Reactions (new), Humanization, PVE, PVP used to all be
+    -- stacked in the left tabbox, leaving the right side nearly empty.
+    local reactions_tabbox = tab:newTabbox("Reactions", true);
+    local reactions = reactions_tabbox:newTab("Reactions");
+
+    reactions:newDropdown("reaction_targets", "Apply Reactions To", { "PVP", "PVE" }, { "PVP", "PVE" }, true,
+        "Which fights the block / roll / misstime reactions below are used in.");
+
+    reactions:newSlider("feint_reaction_ms", "Feint Reaction", 0, 0, 400, 0, true, "ms", nil,
+        "How long after an enemy feints before Auto Parry reacts and drops the parry. 0 = instant. A parry due inside this window still goes out (you get baited, like a person would).");
+    reactions:newSlider("feint_reaction_jitter", "Feint Reaction Jitter", 0, 0, 150, 0, true, "ms", nil,
+        "Random +/- added to Feint Reaction each time.");
+    reactions:newDivider();
+
+    reactions:newSlider("block_instead_chance", "Block Instead Of Parry", 0, 0, 100, 0, true, "%", nil,
+        "Chance to hold block through the hit instead of parrying.");
+    reactions:newSlider("block_early_ms", "Block Early By", 200, 60, 500, 0, true, "ms", nil,
+        "How long before the hit to start holding block (too late and it becomes a parry).");
+    reactions:newSlider("block_hold_ms", "Block Hold After Hit", 250, 50, 800, 0, true, "ms", nil,
+        "How long to keep holding block after the hit.");
+    reactions:newDivider();
+
+    reactions:newSlider("dodge_instead_chance", "Dodge Instead Of Parry", 0, 0, 100, 0, true, "%", nil,
+        "Chance to roll instead of parrying (only when a roll is available).");
+    reactions:newDivider();
+
+    reactions:newSlider("misstime_chance", "Fake Misstime Parry", 0, 0, 100, 0, true, "%", nil,
+        "Chance to tap block early (looks like a mistimed parry), then roll when the hit actually lands.");
+    reactions:newSlider("misstime_early_ms", "Misstime Early By", 220, 150, 500, 0, true, "ms", nil,
+        "How long before the hit the fake parry tap happens.");
+
+    local randomization_dependency_box = reactions_tabbox:newTab("Humanize"):newDependencyBox("ap_randomization");
+    randomization_dependency_box:newLabel("Turn on Humanization (Main tab) to use these.", true);
 
     randomization_dependency_box:newSlider("parry_to_dodge_chance_undefined",    "Force Dodge Chance (Untagged)", 0, 0, 100, 1, true, "%");
     randomization_dependency_box:newSlider("parry_to_dodge_chance_spells",      "Force Dodge Chance (Spells)", 0, 0, 100, 1, true, "%");
@@ -44463,8 +44888,25 @@ return function(tab)
         
     end
 
-    create_settings_page(autoparry_tabbox:newTab("PVE"), "pve_")
-    create_settings_page(autoparry_tabbox:newTab("PVP"), "pvp_")
+    create_settings_page(reactions_tabbox:newTab("PVE"), "pve_")
+    create_settings_page(reactions_tabbox:newTab("PVP"), "pvp_")
+
+    -- Vanta: APC fallback timings (weapon swings with no exact timing).
+    local apc = autoparry_tabbox:newTab("APC");
+    apc:newToggle("apc_fallback_enabled", "APC Fallback Timings", true,
+        "Parry untimed weapon swings using APC's per-weapon windup formulas.");
+    apc:newSlider("apc_timing_offset", "APC Timing Offset", 0, -150, 150, 0, true, "ms", nil,
+        "Shift every APC fallback parry earlier (-) or later (+).");
+    apc:newDivider();
+    apc:newSlider("unparriable_dodge_offset", "Unparriable Dodge Offset", 0, -200, 200, 0, true, "ms", nil,
+        "Shift the dodge for unparriable moves (Ice Eruption, Tornado) earlier (-) or later (+).");
+    apc:newDropdown("unknown_mantra_mode", "Untimed Mantras", { "Ignore", "Dodge" }, "Ignore", false,
+        "Mantras with no timing: ignore them, or roll after the delay below if in range.");
+    apc:newSlider("unknown_mantra_dodge_delay", "Untimed Mantra Dodge Delay", 450, 100, 1500, 0, true, "ms");
+    apc:newSlider("unknown_mantra_range", "Untimed Mantra Range", 40, 10, 150, 0, true, " studs");
+    apc:newDivider();
+    apc:newToggle("apc_debug_skips", "Debug Skipped Anims", false,
+        "With Debug Notifications on, also show animations the fallback ignored and why.");
 
 
     local other = autoparry_tabbox:newTab("Other");
@@ -44766,7 +45208,7 @@ modules["@src/ui/tabs/combat"] = function()
 
 return function(tab)
 
-    local pvp = tab:newGroupBox("Assistance", true);
+    local pvp = tab:newGroupBox("Assistance", false);
     
         pvp:newToggle("easy_roll_cancel", "Easy Roll Cancel", false, "Allows you to press M1 mid dash to cancel it.", nil);
     pvp:newToggleWithKeybind("auto_dustlunge", "Auto Assassination", false, "Allows you to hold M1 to attack, Doesn't follow the No Aerial Logic.", nil);
@@ -44779,11 +45221,11 @@ return function(tab)
 
     pvp:newToggle("m1_hold", "M1 Hold", false, "Allows you to hold M1 to attack, Doesn't follow the No Aerial Logic.", nil);
 
-    local no_stun = tab:newGroupBox("No Stun", true);
+    local no_stun = tab:newGroupBox("No Stun", false);
     no_stun:newToggle(           "fast_swing",           "Remove Weapon Endlag", false, "Removes endlag & stuff from swinging (same effect can be done with no stun)", nil);
     no_stun:newRiskyToggleWithKeybind("no_stun",              "No Stun", false, "Removes all stun from the game."); 
 
-    local attach_to_back = tab:newGroupBox("Attach to Back", true); 
+    local attach_to_back = tab:newGroupBox("Attach to Back", false); 
     attach_to_back:newToggleWithKeybind("attach_to_back", "Attach to Back", false, "Allows you to attach to the back of your target, M1/M2 to select a target.", nil);
     attach_to_back:newSlider("atb_x_offset", "X Offset", 0, -150, 150, 1, true, "s");
     attach_to_back:newSlider("atb_y_offset", "Y Offset", 0, -150, 150, 1, true, "s");
@@ -44955,7 +45397,7 @@ local silent_aim = tab:newGroupBox("Silent Aim", true);
         aztup_options.bi_punishable_type, "Dynamic"
     }});
 
-    local mantra_sliding = tab:newGroupBox("Mantra Slidecast");
+    local mantra_sliding = tab:newGroupBox("Mantra Slidecast", true);
     mantra_sliding:newToggleWithKeybind("mantra_slidecasting", "Mantra Slidecasting", false, "Automatically slides after doing certain actions.", nil);
     local mantra_sliding_dependency_box = mantra_sliding:newDependencyBox("mantra_slidecasting");
     mantra_sliding_dependency_box:newSlider("mantra_slidecasting_chance", "Trigger Chance", 70, 1, 100, 0, true, "%");

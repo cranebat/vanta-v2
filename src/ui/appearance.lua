@@ -180,7 +180,7 @@ function Appearance.build(ui_tab)
     local saved_font = isfile(FONT_SAVE_FILE) and readfile(FONT_SAVE_FILE) or "Lexend";
     if not families[saved_font] then saved_font = "Lexend" end;
 
-    local box = ui_tab:newGroupBox("Appearance", true);
+    local box = ui_tab:newGroupBox("Appearance", false);
 
     box:newToggle("edge_glow", "Edge Glow", glow.enabled, "Soft glow around the window border in your accent colour.", function(on)
         glow.enabled = on;

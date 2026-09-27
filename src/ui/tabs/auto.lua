@@ -34,6 +34,12 @@ function automation:make_general()
         "Legit"
     }, "Blatant", false, "Should auto golden tongue be used blatantly (no message), or send a legit message (W/A/S/D)?.");
     options:newSlider("auto_sprint_delay",        "Sprint Delay", 0, 0, 1, 1);
+    options:newToggle("no_running_attacks", "No Running Attacks", false,
+        "When you M1 while sprinting, stops the sprint first so you get a normal M1 instead of a running attack. Auto Sprint pauses briefly after each M1.");
+    options:newSlider("no_running_resume_ms", "Resume Sprint After", 500, 100, 2000, 0, true, "ms", nil,
+        "How long Auto Sprint stays off after your last M1.");
+    options:newSlider("no_running_max_delay", "Max M1 Delay", 150, 30, 400, 0, true, "ms", nil,
+        "Longest your M1 is held back while waiting for the sprint to stop.");
     options:newSlider("auto_wisp_delay",          "Wisp Delay", 0, 0, 1, 1);
     options:newKeybind("hide_sprint_state_bind", "Hide Auto Sprint State (hold)", 'None', function(on)
         aztup.features.auto_sprint.hide_held = on;
