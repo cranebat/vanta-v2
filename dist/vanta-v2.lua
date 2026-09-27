@@ -22321,6 +22321,7 @@ end
     -- isn't mistaken for a feint. Feint Reaction Chance / Time apply as usual.
     function AnimatorHandler:stopped_early(track, action, ignore_anim_early_end)
         if aztup.flags.detect_early_feints == false then return false end;
+        if ignore_anim_early_end then return false end;
         if action and (action.ignore_early_end or action.ignore_animation_early_end or action.ignore_feints) then return false end;
 
         local state = self.running_tracks[track];
