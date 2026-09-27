@@ -27,6 +27,14 @@ local weapon = require("@src/features/auto-parry/data/weapon");
 
 local apc_fallback = {};
 
+-- For the AP Builder list.
+apc_fallback.BUILDER_NAMES = {
+    "APC Bow", "APC Club", "APC Dagger", "APC Fist", "APC Greataxe", "APC Greatcannon",
+    "APC Greathammer", "APC Greatsword", "APC Pistol", "APC Rapier", "APC Rifle",
+    "APC Spear", "APC Staff", "APC Sword", "APC Twinblade",
+    "Ice Eruption", "Tornado",
+};
+
 --------------------------------------------------------------------------- mantras
 
 -- Unparriable mantras -> dodge. Timings are from the original Vanta build's named
@@ -103,6 +111,7 @@ local function dodge_data(name, when, size)
         source = "apc_fallback",
         action_type = "Mantra",
         name = name,
+        builder_key = name,
         run = function(action)
             action.when = math.max(0, when + ((aztup.flags.unparriable_dodge_offset or 0) / 1000));
             action.type = "Dodge";
@@ -243,6 +252,7 @@ function apc_fallback.build(entity, track, path)
         source = "apc_fallback",
         action_type = "M1",
         name = "APC " .. w.type .. (weapon_label and (" (" .. weapon_label .. ")") or ""),
+        builder_key = "APC " .. w.type, -- AP Builder edits apply per weapon type
         run = function(action)
             -- `track` and `weapon` are injected as globals by animator-handler.lua's
             -- setfenv before this runs, same as every other data.run entry in base.lua.
@@ -272,9 +282,10 @@ function apc_fallback.build(entity, track, path)
             elseif w.type == "Club" then
                 windup = (0.180 / speed) + 0.100;
             elseif w.type == "Twinblade" then
-                -- Vanta: APC's (0.200 / speed) + 0.050 parried slightly late on
-                -- twinblades, so shifted by "Twinblade M1 Offset" (default -35ms).
-                windup = (0.200 / speed) + 0.050 + ((aztup.flags.twinblade_m1_offset or -35) / 1000);
+                -- Vanta: APC's (0.200 / speed) + 0.050 parried late on twinblades.
+                -- All twinblades use the timing tuned for Scalesplitter (105ms
+                -- earlier) plus 10ms more: 115ms earlier than APC.
+                windup = (0.200 / speed) + 0.050 - 0.115;
             elseif w.type == "Spear" then
                 windup = (0.150 / speed) + 0.100;
             elseif w.type == "Greatsword" then

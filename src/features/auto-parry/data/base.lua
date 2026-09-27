@@ -3347,31 +3347,66 @@ return {
 					local rocket: RocketPropulsion = v:FindFirstChild('RocketPropulsion');
 					local rocketTarget = rocket and rocket.Target;
 					if (rocketTarget ~= local_player.root_part) then continue end;
-					if(not checkRangeFromPing(v, 22.5 + math.min(rocket.MaxSpeed / 3, 10), rocket.MaxSpeed)) then continue end;
-					
-                    action.when = 0.2;
-                    action.offset = CFrame.new(0, 0, 0)
-                    action.hitbox = Vector3.new(2500, 2500, 2500);
-                    action.ignore_early_end = true;
-                    action.ignore_hitbox = true;
 
-                    -- Vanta: only change vs. Rain's original - if the caster is standing
-                    -- right at your back (a parry can't cover you there), roll instead.
-                    -- If the roll is on cooldown it still parries.
+                    -- Vanta: is the caster standing right at your back? (a parry can't
+                    -- cover you there, so that case rolls instead)
+                    local caster_behind = false;
                     local my_root = local_player.root_part;
                     local caster_root = defender.entity:FindFirstChild("HumanoidRootPart");
                     if my_root and caster_root then
                         local to_caster = (caster_root.Position - my_root.Position) * Vector3.new(1, 0, 1);
                         local look = my_root.CFrame.LookVector * Vector3.new(1, 0, 1);
-                        if to_caster.Magnitude <= 8 and to_caster.Magnitude > 0.1
-                            and to_caster.Unit:Dot(look.Unit) < -0.3
-                        then
-                            action.prefer_dodge = true;
-                            action.name = "Lightning Stream (caster behind you)";
-                        end;
+                        caster_behind = to_caster.Magnitude <= 8 and to_caster.Magnitude > 0.1
+                            and to_caster.Unit:Dot(look.Unit) < -0.3;
                     end;
 
-                    action:push();
+                    if caster_behind then
+                        -- Rain's original range/timing, but roll (parry if the roll is on cooldown).
+                        if(not checkRangeFromPing(v, 22.5 + math.min(rocket.MaxSpeed / 3, 10), rocket.MaxSpeed)) then continue end;
+                        action.when = 0.2;
+                        action.offset = CFrame.new(0, 0, 0)
+                        action.hitbox = Vector3.new(2500, 2500, 2500);
+                        action.ignore_early_end = true;
+                        action.ignore_hitbox = true;
+                        action.prefer_dodge = true;
+                        action.name = "Lightning Stream (caster behind you)";
+                        action:push();
+                        return action
+                    end;
+
+                    -- Vanta: parry much earlier (15 studs further out, no 0.2s wait) and
+                    -- keep holding block until the stream arrives - if the parry press is
+                    -- too early, the held block still catches it.
+                    if(not checkRangeFromPing(v, 37.5 + math.min(rocket.MaxSpeed / 3, 10), rocket.MaxSpeed)) then continue end;
+
+                    local caster = defender.entity;
+                    DefendActionManager._current_parry_seq = (DefendActionManager._current_parry_seq or 0) + 1;
+                    local seq = DefendActionManager._current_parry_seq;
+                    DefendActionManager:add_action(caster, "block", tick(), seq);
+                    -- Release is scheduled now (1.2s max) so the block manager doesn't
+                    -- auto-release after 0.25s; it's brought forward once the stream lands.
+                    DefendActionManager:add_action(caster, "unblock", tick() + 1.2, seq);
+                    if aztup.flags.auto_parry_debug then
+                        Logger:short_notify("[Lightning Stream] Parrying early, holding block until it lands.");
+                    end;
+
+                    task.spawn(function()
+                        local started = tick();
+                        local close_at = nil;
+                        while v.Parent and tick() - started < 1.2 do
+                            local me = local_player.root_part;
+                            if me and (v.Position - me.Position).Magnitude <= 4 then
+                                close_at = close_at or tick();
+                                if tick() - close_at > 0.2 then break end;
+                            end;
+                            task.wait();
+                        end;
+                        for _, queued in DefendActionManager.actions_to_play_through do
+                            if queued.type == "unblock" and (queued.seq == seq or queued.other == seq) then
+                                queued.when = math.min(queued.when, tick());
+                            end;
+                        end;
+                    end);
 
 					return action
 end;

@@ -19,6 +19,7 @@ end
 local encrypted_timing_data = require("@src/features/auto-parry/data/encrypted_timing_data");
 local custom_timings = require("@src/features/auto-parry/data/custom_timings");
 local apc_fallback = require("@src/features/auto-parry/data/apc_fallback");
+local builder_overrides = require("@src/features/auto-parry/data/builder_overrides");
 local ap_breaker_tracks = setmetatable({}, { __mode = "k" });
 
 break_anims = function(track, time, data, action_type, self)
@@ -270,6 +271,41 @@ end
         
         return getgenv().load_timings(true)    
 end);
+
+    -- Vanta AP Builder: every timing name, and the current values of a data timing.
+    getgenv().vanta_timing_list = function()
+        local list = {};
+        for index in timing_data do
+            if typeof(index) == "string" then table.insert(list, index) end;
+        end;
+        table.sort(list, function(a, b) return a:lower() < b:lower() end);
+        return list
+    end;
+
+    -- Decoded actions of a data timing ({ {when, type, hitbox, offset, shape}, ... }),
+    -- or nil for a scripted timing (one with a run function).
+    getgenv().vanta_timing_actions = function(name)
+        local data = timing_data[name];
+        if not data then return nil end;
+        if data.enc then
+            data = process(table.clone(data));
+        end;
+        if data.run or not data.actions then return nil end;
+        local out = {};
+        for i, a in builder_overrides.sorted(data.actions) do
+            local hitbox, offset = a.hitbox, a.offset;
+            if typeof(hitbox) == "Vector3" then hitbox = { X = hitbox.X, Y = hitbox.Y, Z = hitbox.Z } end;
+            if typeof(offset) == "CFrame" then offset = { X = offset.X, Y = offset.Y, Z = offset.Z } end;
+            out[i] = {
+                when = a.when or 0,
+                type = a.type or "Parry",
+                hitbox = hitbox or { X = 0, Y = 0, Z = 0 },
+                offset = offset or { X = 0, Y = 0, Z = 0 },
+                shape = a.shape,
+            };
+        end;
+        return out
+    end;
     
     if not LPH_OBFUSCATED and not is_chime then
         local last_update = tick();
@@ -1401,7 +1437,8 @@ end;
             local offset = action.offset or CFrame.new();
             local type = action.type or "Parry";
             local ignore_anim_early_end = action.ignore_animation_early_end or data.ignore_animation_early_end;
-            local time = action.when or 0;
+            local builder_key = data.builder_key or pot_name or data.name;
+            local time = (action.when or 0) + builder_overrides.offset(builder_key);
             local name = action.name or data.name or pot_name or "Unidentified " .. track.Animation.AnimationId;
 
             if data.ignore_hitbox_check or data.ignore_hitbox or action.ignore_hitbox_check then
@@ -1453,6 +1490,18 @@ end;
                     offset.Y or 0,
                     offset.Z or 0
                 );
+            end;
+
+            -- Vanta AP Builder: hitbox scale for this timing.
+            do
+                local scale = builder_overrides.hitbox_scale(builder_key);
+                if scale ~= 1 and typeof(hitbox) == "Vector3" then
+                    if action.half_size_offset then
+                        -- keep the box starting at the same spot; grow it forwards only
+                        offset -= Vector3.new(0, 0, (hitbox.Z * scale - hitbox.Z) / 2);
+                    end;
+                    hitbox = hitbox * scale;
+                end;
             end;
 
             
@@ -1882,6 +1931,9 @@ data = table.clone(data);
             data = process(data);
 
         end
+
+        -- Vanta AP Builder: your per-action edits for data timings.
+        data = builder_overrides.apply_static(pot_name, data);
 
         -- Vanta: Rain's timing data tags mantras as "Spell"; Deepwoken calls them
         -- mantras, and so does every setting in the menu.

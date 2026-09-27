@@ -42,6 +42,19 @@ end;
             "spotify_redirect_url",
             "start_hidden",
             "start_minimized",
+            "ap_builder_timing",
+            "ap_builder_offset",
+            "ap_builder_scale",
+            "ap_builder_action",
+            "ap_builder_when",
+            "ap_builder_hx",
+            "ap_builder_hy",
+            "ap_builder_hz",
+            "ap_builder_ox",
+            "ap_builder_oy",
+            "ap_builder_oz",
+            "ap_builder_type",
+            "ap_builder_ball",
             
         })
         SaveManager:SetFolder('Vanta/Deepwoken-Config')

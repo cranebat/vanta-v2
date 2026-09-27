@@ -112,8 +112,6 @@ return function(tab)
 
     advanced:newSlider("apc_timing_offset", "M1 Timing Offset", 0, -150, 150, 0, true, "ms", nil,
         "Shift parries on player weapon M1s earlier (-) or later (+).");
-    advanced:newSlider("twinblade_m1_offset", "Twinblade M1 Offset", -35, -200, 100, 0, true, "ms", nil,
-        "Shift parries on ALL twinblade M1s (Death's Reverie, Scalesplitter, ...). Negative = earlier.");
 
     advanced:newSlider("unparriable_dodge_offset", "Unparriable Move Latency", 0, -200, 200, 0, true, "ms", nil,
         "Shift the dodge for moves you can't parry (Ice Eruption, Tornado) earlier (-) or later (+).");
@@ -477,6 +475,209 @@ end;
 
     other:newToggle("info_logger", "Timing Logger", false, "Log anims to console.", nil);
     other:newSlider("info_logger_range", "Timing Logger Range", 1, 1, 500, 0, true, "s");
+
+    ------------------------------------------------------------------ AP Builder
+    -- Edit any timing live. Data timings: every value per action. Scripted and APC
+    -- weapon timings: an offset and a hitbox scale. Edits are saved to
+    -- workspace/Vanta/ap_builder.json; "Copy Changes" puts them on the clipboard to
+    -- be added to the official timings.
+    xpcall(function()
+        local builder = require("@src/features/auto-parry/data/builder_overrides");
+        local apc = require("@src/features/auto-parry/data/apc_fallback");
+        local ab = tab:newGroupBox("AP Builder", true);
+
+        local current = { name = nil, index = 1, defaults = nil, loading = false };
+        local controls = {};
+        local ACTION_TYPES = { "Parry", "Dodge", "Forced Full Dodge", "Start Block", "End Block", "Jump", "Crouch" };
+        local PLACEHOLDER = "(loading timings...)";
+
+        local function is_apc(name)
+            return table.find(apc.BUILDER_NAMES, name) ~= nil
+        end
+
+        local status = nil;
+        local function update_status()
+            if not status then return end;
+            local name = current.name;
+            if not name then
+                status:SetText("Pick a timing above.");
+                return
+            end;
+            local kind;
+            if current.defaults then
+                kind = string.format("data timing, %d action%s - every value editable", #current.defaults, #current.defaults == 1 and "" or "s");
+            elseif is_apc(name) then
+                kind = "APC formula - Timing Offset & Hitbox Scale only";
+            else
+                kind = "scripted - Timing Offset & Hitbox Scale only";
+            end;
+            local edited = builder.entry(name) ~= nil and " [edited]" or "";
+            status:SetText(string.format("%s: %s%s\nEdited timings: %d", name, kind, edited, builder.count()));
+        end
+
+        local function set(id, value)
+            local c = controls[id];
+            if c and value ~= nil then c:SetValue(value) end;
+        end
+
+        local function select_action(index)
+            current.index = index or 1;
+            local d = current.defaults and current.defaults[current.index];
+            if not d then return update_status() end;
+            local edit = builder.action(current.name, current.index) or {};
+            local hitbox = edit.hitbox or d.hitbox;
+            local offset = edit.offset or d.offset;
+            local shape = edit.shape;
+            if shape == nil then shape = d.shape end;
+
+            current.loading = true;
+            set("when", math.floor(((edit.when or d.when) * 1000) + 0.5));
+            set("hx", hitbox.X); set("hy", hitbox.Y); set("hz", hitbox.Z);
+            set("ox", offset.X); set("oy", offset.Y); set("oz", offset.Z);
+            set("type", edit.type or d.type or "Parry");
+            set("ball", shape == "ball");
+            current.loading = false;
+            update_status();
+        end
+
+        local function select_timing(name)
+            if not name or name == PLACEHOLDER then return end;
+            current.name = name;
+            local get_actions = getgenv().vanta_timing_actions;
+            current.defaults = (not is_apc(name)) and get_actions and get_actions(name) or nil;
+
+            local action_list = {};
+            if current.defaults then
+                for i = 1, #current.defaults do table.insert(action_list, tostring(i)) end;
+            end;
+            if #action_list == 0 then action_list = { "1" } end;
+
+            local entry = builder.entry(name) or {};
+            current.loading = true;
+            controls.action:SetValues(action_list);
+            controls.action:SetValue("1");
+            set("offset", entry.offset_ms or 0);
+            set("scale", entry.hitbox_scale or 100);
+            current.loading = false;
+            select_action(1);
+        end
+
+        -- Writes one edit for the selected timing/action.
+        local function edit_action(fn)
+            if current.loading or not current.name or not current.defaults then return end;
+            local a = builder.action(current.name, current.index, true);
+            fn(a);
+            builder.save();
+            update_status();
+        end
+
+        -- Change one axis only; the other two keep their current (edited or
+        -- original) values, never a slider's clamped value.
+        local function edit_axis(field, axis, value)
+            edit_action(function(a)
+                local d = current.defaults[current.index];
+                local base = a[field] or d[field] or { X = 0, Y = 0, Z = 0 };
+                local v = { X = base.X or 0, Y = base.Y or 0, Z = base.Z or 0 };
+                v[axis:upper()] = value;
+                a[field] = v;
+            end);
+        end
+
+        ab:newToggle("ap_builder_enabled", "Use Builder Changes", true,
+            "Apply your AP Builder edits to Auto Parry. Turn off to compare against the official timings.");
+
+        controls.timing = ab:newDropdown("ap_builder_timing", "Timing", { PLACEHOLDER }, PLACEHOLDER, false,
+            "The timing to edit (click and type to search).", function(value)
+                select_timing(value);
+            end, true);
+
+        status = ab:newLabel("Pick a timing above.", true);
+
+        controls.offset = ab:newSlider("ap_builder_offset", "Timing Offset", 0, -500, 500, 0, true, "ms", function(value)
+            if current.loading or not current.name then return end;
+            builder.entry(current.name, true).offset_ms = value;
+            builder.save();
+            update_status();
+        end, "Shift every action of this timing earlier (-) or later (+). Works for all timings.");
+
+        controls.scale = ab:newSlider("ap_builder_scale", "Hitbox Scale", 100, 25, 300, 0, true, "%", function(value)
+            if current.loading or not current.name then return end;
+            builder.entry(current.name, true).hitbox_scale = value;
+            builder.save();
+            update_status();
+        end, "Scale every hitbox of this timing. Works for all timings.");
+
+        ab:newDivider();
+        ab:newLabel("Action values (data timings):", true);
+
+        controls.action = ab:newDropdown("ap_builder_action", "Action", { "1" }, "1", false,
+            "Which action of this timing to edit.", function(value)
+                if current.loading then return end;
+                select_action(tonumber(value) or 1);
+            end);
+
+        controls.when = ab:newSlider("ap_builder_when", "When", 0, 0, 7000, 0, true, "ms", function(value)
+            edit_action(function(a) a.when = value / 1000 end);
+        end, "Time from the start of the animation to the parry/dodge.");
+
+        for _, axis in { "x", "y", "z" } do
+            controls["h" .. axis] = ab:newSlider("ap_builder_h" .. axis, "Hitbox " .. axis:upper(), 0, 0, 500, 1, true, " studs", function(value)
+                edit_axis("hitbox", axis, value);
+            end);
+        end;
+        for _, axis in { "x", "y", "z" } do
+            controls["o" .. axis] = ab:newSlider("ap_builder_o" .. axis, "Offset " .. axis:upper(), 0, -200, 200, 1, true, " studs", function(value)
+                edit_axis("offset", axis, value);
+            end, axis == "z" and "Negative Z = in front of the attacker." or nil);
+        end;
+
+        controls.type = ab:newDropdown("ap_builder_type", "Action Type", ACTION_TYPES, "Parry", false,
+            "What Auto Parry does for this action.", function(value)
+                edit_action(function(a) a.type = value end);
+            end);
+
+        controls.ball = ab:newToggle("ap_builder_ball", "Ball Hitbox", false,
+            "Use a sphere instead of a box for this action's hitbox.", function(on)
+                edit_action(function(a) a.shape = on and "ball" or "" end);
+            end);
+
+        ab:newDivider();
+        ab:newButton("Copy Changes", function()
+            local text = builder.export();
+            pcall(setclipboard, text);
+            print("[vanta] AP Builder changes:\n" .. text);
+            Logger:notify(string.format("Copied %d edited timing%s to your clipboard - paste it to Claude.", builder.count(), builder.count() == 1 and "" or "s"));
+        end, false, "Copies all your edits (only what you changed) so they can be added to the official timings.");
+
+        ab:newButton("Reset This Timing", function()
+            if not current.name then return end;
+            builder.reset(current.name);
+            select_timing(current.name);
+        end, false, "Undo your edits to the selected timing.");
+
+        ab:newButton("Reset All Changes", function()
+            builder.reset_all();
+            if current.name then select_timing(current.name) end;
+            Logger:notify("AP Builder: all edits cleared.");
+        end, true, "Double-click. Clears every AP Builder edit.");
+
+        -- The timing list is ready once Auto Parry has loaded its timings.
+        task.spawn(function()
+            local started = tick();
+            repeat task.wait(0.5) until getgenv().vanta_timing_list or tick() - started > 60;
+            local names = {};
+            if getgenv().vanta_timing_list then
+                for _, n in getgenv().vanta_timing_list() do table.insert(names, n) end;
+            end;
+            for _, n in apc.BUILDER_NAMES do table.insert(names, n) end;
+            if #names > 0 then
+                controls.timing:SetValues(names);
+            end;
+            update_status();
+        end);
+    end, function(err)
+        warn("[vanta] AP Builder failed to load: " .. tostring(err));
+    end);
     if can_edit_internal_timings or isfile("builder.rbxm") then
         local debug = tab:newGroupBox("Debug", true);
 
