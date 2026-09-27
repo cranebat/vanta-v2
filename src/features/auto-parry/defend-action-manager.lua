@@ -369,6 +369,23 @@ end;
                 table.clear(self.actions_to_play_through);
             end
 
+            -- Vanta: Block Overrides Auto Parry. While you're holding block yourself,
+            -- every queued parry / dodge / block / unblock is dropped - no matter what
+            -- triggered it (animations, effects, projectiles, reactions). Unblocks are
+            -- dropped too so the script never releases your block.
+            if aztup.flags.block_overrides_ap ~= false and general:raw_is_holding_f() then
+                if #self.actions_to_play_through > 0 then
+                    table.clear(self.actions_to_play_through);
+                    if aztup.flags.auto_parry_debug then
+                        setthreadidentity(8);
+                        Logger:short_notify("[AP] Holding block - skipped.");
+                    end;
+                end;
+                self._block_count = 0;
+                self._block_started_at = 0;
+                return;
+            end
+
             if self._block_count > 0 then
                 local has_pending_unblock = false
                 for i = #self.actions_to_play_through, 1, -1 do

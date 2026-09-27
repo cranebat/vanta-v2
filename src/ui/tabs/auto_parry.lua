@@ -35,6 +35,9 @@ return function(tab)
         aztup_toggles.auto_parry_debug:SetValue(false);
     end, false);    
 
+    auto_parry_dependency_box:newToggle("block_overrides_ap", "Block Overrides Auto Parry", true,
+        "While you're holding block yourself, Auto Parry does nothing - no parries, dodges, blocks or reactions - and never releases your block.");
+
     auto_parry_dependency_box:newToggleWithKeybind("ap_randomization", "Humanization", false, "Adds extra randomization to actions.", function(val) end, false);
     
     auto_parry_dependency_box:newToggleWithKeybind("auto_feint", "Auto Feint", false, "Automatically feint attacks when Auto Parry wants to parry.");
