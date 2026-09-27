@@ -3355,17 +3355,20 @@ return {
                     action.ignore_early_end = true;
                     action.ignore_hitbox = true;
 
-                    -- Vanta: up close (or when the stream has curved round behind
-                    -- you, where a parry can't cover you) roll instead of parrying.
-                    -- If the roll is on cooldown it still parries as a fallback.
-                    local root = local_player.root_part;
-                    local to_stream = (v.Position - root.Position) * Vector3.new(1, 0, 1);
-                    local look = root.CFrame.LookVector * Vector3.new(1, 0, 1);
-                    local behind = to_stream.Magnitude > 0.1 and look.Magnitude > 0.1 and to_stream.Unit:Dot(look.Unit) < -0.2;
-                    local close = self:distance() <= (aztup.flags.lightning_stream_dodge_range or 30);
-                    if behind or close then
-                        action.prefer_dodge = true;
-                        action.name = behind and "Lightning Stream (behind)" or "Lightning Stream (close)";
+                    -- Vanta: only change vs. Rain's original - if the caster is standing
+                    -- right at your back (a parry can't cover you there), roll instead.
+                    -- If the roll is on cooldown it still parries.
+                    local my_root = local_player.root_part;
+                    local caster_root = defender.entity:FindFirstChild("HumanoidRootPart");
+                    if my_root and caster_root then
+                        local to_caster = (caster_root.Position - my_root.Position) * Vector3.new(1, 0, 1);
+                        local look = my_root.CFrame.LookVector * Vector3.new(1, 0, 1);
+                        if to_caster.Magnitude <= 8 and to_caster.Magnitude > 0.1
+                            and to_caster.Unit:Dot(look.Unit) < -0.3
+                        then
+                            action.prefer_dodge = true;
+                            action.name = "Lightning Stream (caster behind you)";
+                        end;
                     end;
 
                     action:push();

@@ -13989,31 +13989,16 @@ function apc_fallback.override(entity, entry_name)
     return nil;
 end
 
---------------------------------------------------------------------------- per-weapon tweaks
+--------------------------------------------------------------------------- weapon name
 
--- Seconds added to the APC windup for specific weapons (negative = parry earlier).
--- Matched against the weapon's name (the "PrimaryWeapon" attribute on its Weapon tool).
-local WEAPON_TWEAKS = {
-    Scalesplitter = -0.040, -- still parried late after the general twinblade change
-};
-
+-- The weapon's name (the "PrimaryWeapon" attribute on its Weapon tool), only used to
+-- label Debug Notifications, e.g. "APC Twinblade (Scalesplitter)".
 local function weapon_name(entity)
     local player = game:GetService("Players"):GetPlayerFromCharacter(entity);
     local backpack = player and player:FindFirstChild("Backpack");
     local tool = entity:FindFirstChild("Weapon") or (backpack and backpack:FindFirstChild("Weapon"));
     local name = tool and tool:GetAttribute("PrimaryWeapon");
     return typeof(name) == "string" and name or nil
-end
-
-local function weapon_tweak(entity)
-    local name = weapon_name(entity);
-    if not name then return 0, nil end;
-    for weapon, seconds in WEAPON_TWEAKS do
-        if name:lower():find(weapon:lower(), 1, true) then
-            return seconds, name
-        end;
-    end;
-    return 0, name
 end
 
 --------------------------------------------------------------------------- build
@@ -14104,8 +14089,8 @@ function apc_fallback.build(entity, track, path)
         return nil, "no weapon";
     end;
 
-    local ok_tweak, tweak, weapon_label = pcall(weapon_tweak, entity);
-    if not ok_tweak then tweak, weapon_label = 0, nil end;
+    local ok_name, weapon_label = pcall(weapon_name, entity);
+    if not ok_name then weapon_label = nil end;
 
     return {
         source = "apc_fallback",
@@ -14140,9 +14125,9 @@ function apc_fallback.build(entity, track, path)
             elseif w.type == "Club" then
                 windup = (0.180 / speed) + 0.100;
             elseif w.type == "Twinblade" then
-                -- Vanta: was (0.200 / speed) + 0.050 - parried slightly late on
-                -- twinblades (Death's Reverie, Scalesplitter), so 35ms earlier.
-                windup = (0.200 / speed) + 0.015;
+                -- Vanta: APC's (0.200 / speed) + 0.050 parried slightly late on
+                -- twinblades, so shifted by "Twinblade M1 Offset" (default -35ms).
+                windup = (0.200 / speed) + 0.050 + ((aztup.flags.twinblade_m1_offset or -35) / 1000);
             elseif w.type == "Spear" then
                 windup = (0.150 / speed) + 0.100;
             elseif w.type == "Greatsword" then
@@ -14165,7 +14150,7 @@ function apc_fallback.build(entity, track, path)
                 return;
             end;
 
-            windup = math.max(0, windup + tweak + ((aztup.flags.apc_timing_offset or 0) / 1000));
+            windup = math.max(0, windup + ((aztup.flags.apc_timing_offset or 0) / 1000));
 
             local length = w.length or 4;
             action.when = windup;
@@ -17537,17 +17522,20 @@ return {
                     action.ignore_early_end = true;
                     action.ignore_hitbox = true;
 
-                    -- Vanta: up close (or when the stream has curved round behind
-                    -- you, where a parry can't cover you) roll instead of parrying.
-                    -- If the roll is on cooldown it still parries as a fallback.
-                    local root = local_player.root_part;
-                    local to_stream = (v.Position - root.Position) * Vector3.new(1, 0, 1);
-                    local look = root.CFrame.LookVector * Vector3.new(1, 0, 1);
-                    local behind = to_stream.Magnitude > 0.1 and look.Magnitude > 0.1 and to_stream.Unit:Dot(look.Unit) < -0.2;
-                    local close = self:distance() <= (aztup.flags.lightning_stream_dodge_range or 30);
-                    if behind or close then
-                        action.prefer_dodge = true;
-                        action.name = behind and "Lightning Stream (behind)" or "Lightning Stream (close)";
+                    -- Vanta: only change vs. Rain's original - if the caster is standing
+                    -- right at your back (a parry can't cover you there), roll instead.
+                    -- If the roll is on cooldown it still parries.
+                    local my_root = local_player.root_part;
+                    local caster_root = defender.entity:FindFirstChild("HumanoidRootPart");
+                    if my_root and caster_root then
+                        local to_caster = (caster_root.Position - my_root.Position) * Vector3.new(1, 0, 1);
+                        local look = my_root.CFrame.LookVector * Vector3.new(1, 0, 1);
+                        if to_caster.Magnitude <= 8 and to_caster.Magnitude > 0.1
+                            and to_caster.Unit:Dot(look.Unit) < -0.3
+                        then
+                            action.prefer_dodge = true;
+                            action.name = "Lightning Stream (caster behind you)";
+                        end;
                     end;
 
                     action:push();
@@ -45719,6 +45707,9 @@ return function(tab)
 
     advanced:newSlider("apc_timing_offset", "M1 Timing Offset", 0, -150, 150, 0, true, "ms", nil,
         "Shift parries on player weapon M1s earlier (-) or later (+).");
+    advanced:newSlider("twinblade_m1_offset", "Twinblade M1 Offset", -35, -200, 100, 0, true, "ms", nil,
+        "Shift parries on ALL twinblade M1s (Death's Reverie, Scalesplitter, ...). Negative = earlier.");
+
     advanced:newSlider("unparriable_dodge_offset", "Unparriable Move Latency", 0, -200, 200, 0, true, "ms", nil,
         "Shift the dodge for moves you can't parry (Ice Eruption, Tornado) earlier (-) or later (+).");
     advanced:newDropdown("unknown_mantra_mode", "Untimed Mantras", { "Ignore", "Dodge" }, "Ignore", false,
@@ -45739,8 +45730,6 @@ return function(tab)
         "Longest Multi-Hit Guard keeps defending after a failed parry (it also stops after ~0.9s without being hit).");
     advanced:newSlider("tick_guard_range", "Moving Multi-Hit Range", 15, 5, 40, 0, true, " studs", nil,
         "Moving Multi-Hit Guard: how close the attacker must get before it rolls/blocks.");
-    advanced:newSlider("lightning_stream_dodge_range", "Lightning Stream Dodge Range", 30, 0, 100, 0, true, " studs", nil,
-        "Roll (instead of parry) Lightning Stream when the caster is this close. 0 = only roll when it comes from behind.");
     advanced:newSlider("gun_parry_lead", "Projectile Parry Lead", 120, 0, 300, 0, true, "ms", nil,
         "Fire Gun / Wind Gun: how long before the projectile reaches you to parry (on top of your ping). Raise if you parry too late, lower if too early.");
     advanced:newSlider("back_dodge_walk_delay", "Walk Forward Delay", 60, 0, 300, 0, true, "ms", nil,

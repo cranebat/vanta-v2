@@ -136,31 +136,16 @@ function apc_fallback.override(entity, entry_name)
     return nil;
 end
 
---------------------------------------------------------------------------- per-weapon tweaks
+--------------------------------------------------------------------------- weapon name
 
--- Seconds added to the APC windup for specific weapons (negative = parry earlier).
--- Matched against the weapon's name (the "PrimaryWeapon" attribute on its Weapon tool).
-local WEAPON_TWEAKS = {
-    Scalesplitter = -0.040, -- still parried late after the general twinblade change
-};
-
+-- The weapon's name (the "PrimaryWeapon" attribute on its Weapon tool), only used to
+-- label Debug Notifications, e.g. "APC Twinblade (Scalesplitter)".
 local function weapon_name(entity)
     local player = game:GetService("Players"):GetPlayerFromCharacter(entity);
     local backpack = player and player:FindFirstChild("Backpack");
     local tool = entity:FindFirstChild("Weapon") or (backpack and backpack:FindFirstChild("Weapon"));
     local name = tool and tool:GetAttribute("PrimaryWeapon");
     return typeof(name) == "string" and name or nil
-end
-
-local function weapon_tweak(entity)
-    local name = weapon_name(entity);
-    if not name then return 0, nil end;
-    for weapon, seconds in WEAPON_TWEAKS do
-        if name:lower():find(weapon:lower(), 1, true) then
-            return seconds, name
-        end;
-    end;
-    return 0, name
 end
 
 --------------------------------------------------------------------------- build
@@ -251,8 +236,8 @@ function apc_fallback.build(entity, track, path)
         return nil, "no weapon";
     end;
 
-    local ok_tweak, tweak, weapon_label = pcall(weapon_tweak, entity);
-    if not ok_tweak then tweak, weapon_label = 0, nil end;
+    local ok_name, weapon_label = pcall(weapon_name, entity);
+    if not ok_name then weapon_label = nil end;
 
     return {
         source = "apc_fallback",
@@ -287,9 +272,9 @@ function apc_fallback.build(entity, track, path)
             elseif w.type == "Club" then
                 windup = (0.180 / speed) + 0.100;
             elseif w.type == "Twinblade" then
-                -- Vanta: was (0.200 / speed) + 0.050 - parried slightly late on
-                -- twinblades (Death's Reverie, Scalesplitter), so 35ms earlier.
-                windup = (0.200 / speed) + 0.015;
+                -- Vanta: APC's (0.200 / speed) + 0.050 parried slightly late on
+                -- twinblades, so shifted by "Twinblade M1 Offset" (default -35ms).
+                windup = (0.200 / speed) + 0.050 + ((aztup.flags.twinblade_m1_offset or -35) / 1000);
             elseif w.type == "Spear" then
                 windup = (0.150 / speed) + 0.100;
             elseif w.type == "Greatsword" then
@@ -312,7 +297,7 @@ function apc_fallback.build(entity, track, path)
                 return;
             end;
 
-            windup = math.max(0, windup + tweak + ((aztup.flags.apc_timing_offset or 0) / 1000));
+            windup = math.max(0, windup + ((aztup.flags.apc_timing_offset or 0) / 1000));
 
             local length = w.length or 4;
             action.when = windup;

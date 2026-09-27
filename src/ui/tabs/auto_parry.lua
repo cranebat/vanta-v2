@@ -112,6 +112,9 @@ return function(tab)
 
     advanced:newSlider("apc_timing_offset", "M1 Timing Offset", 0, -150, 150, 0, true, "ms", nil,
         "Shift parries on player weapon M1s earlier (-) or later (+).");
+    advanced:newSlider("twinblade_m1_offset", "Twinblade M1 Offset", -35, -200, 100, 0, true, "ms", nil,
+        "Shift parries on ALL twinblade M1s (Death's Reverie, Scalesplitter, ...). Negative = earlier.");
+
     advanced:newSlider("unparriable_dodge_offset", "Unparriable Move Latency", 0, -200, 200, 0, true, "ms", nil,
         "Shift the dodge for moves you can't parry (Ice Eruption, Tornado) earlier (-) or later (+).");
     advanced:newDropdown("unknown_mantra_mode", "Untimed Mantras", { "Ignore", "Dodge" }, "Ignore", false,
@@ -132,8 +135,6 @@ return function(tab)
         "Longest Multi-Hit Guard keeps defending after a failed parry (it also stops after ~0.9s without being hit).");
     advanced:newSlider("tick_guard_range", "Moving Multi-Hit Range", 15, 5, 40, 0, true, " studs", nil,
         "Moving Multi-Hit Guard: how close the attacker must get before it rolls/blocks.");
-    advanced:newSlider("lightning_stream_dodge_range", "Lightning Stream Dodge Range", 30, 0, 100, 0, true, " studs", nil,
-        "Roll (instead of parry) Lightning Stream when the caster is this close. 0 = only roll when it comes from behind.");
     advanced:newSlider("gun_parry_lead", "Projectile Parry Lead", 120, 0, 300, 0, true, "ms", nil,
         "Fire Gun / Wind Gun: how long before the projectile reaches you to parry (on top of your ping). Raise if you parry too late, lower if too early.");
     advanced:newSlider("back_dodge_walk_delay", "Walk Forward Delay", 60, 0, 300, 0, true, "ms", nil,
