@@ -22313,6 +22313,30 @@ end
         return tick() >= self.last_feint_at + (self.last_feint_reaction_s or 0)
     end
 
+    -- Vanta: Detect Early Feints. An early feint stops the attack animation before
+    -- the hit, often without the feint sound. The stock "animation ended early" check
+    -- misses it because a fading-out track still counts as playing. Here: the track
+    -- was Stop()ped (Stopped fired) and it's actually fading out. A breaker that
+    -- stops a real attack with a huge fade (Aggressive 3) keeps full weight, so it
+    -- isn't mistaken for a feint. Feint Reaction Chance / Time apply as usual.
+    function AnimatorHandler:stopped_early(track, action, ignore_anim_early_end)
+        if aztup.flags.detect_early_feints == false then return false end;
+        if action and (action.ignore_early_end or action.ignore_animation_early_end or action.ignore_feints) then return false end;
+
+        local state = self.running_tracks[track];
+        if not state or not state.stopped_at then return false end;
+
+        local fading = track.WeightCurrent < 0.5 or anti_ap_breaker:is_fully_dead(track, self.entity);
+        if not fading then return false end;
+
+        if state.stop_reacted == nil then
+            state.stop_reacted = random:NextNumber(0, 100) < (aztup.flags.feint_reaction_chance or 100);
+        end;
+        if not state.stop_reacted then return false end;
+
+        return tick() >= state.stopped_at + (aztup.flags.feint_reaction_ms or 0) / 1000
+    end
+
     function AnimatorHandler:cancel_gale_feinted_tracks(playing_tracks)
         for _, track in playing_tracks do
             local state = self.running_tracks[track];
@@ -23259,6 +23283,7 @@ end;
                     local early_thread = task.delay(early_delay, function()
                         if not action.ignore_early_end and not track_still_active(track, self.entity) and not ignore_anim_early_end then return end;
                         if self:feinted_since(track, action) then return end;
+                        if self:stopped_early(track, action, ignore_anim_early_end) then return end;
                         if check_action_preconditions_auto_feint(self, track, action, data, action_type, name, index, in_hitbox) then return end;
                         if check_action_situation_filters(self, track, action, action_type, name, index) then return end;
 
@@ -23358,6 +23383,11 @@ end
 
             if self:feinted_since(track, action) then
                 debug_print("[%s] Skipping action %i, attacker feinted.", name, index);
+                continue
+            end
+
+            if self:stopped_early(track, action, ignore_anim_early_end) then
+                debug_print("[%s] Skipping action %i, attack stopped early (feint).", name, index);
                 continue
             end
 
@@ -23682,6 +23712,18 @@ end
         end
 
         self.running_tracks[track] = { thread = coroutine.running(), feint_threads = {}, cleanups = {}, pre_delay = settle_delay, played_at = played_at };
+
+        -- Vanta: remember when the attacker's animation gets stopped (see stopped_early).
+        do
+            local state_ref = self.running_tracks[track];
+            if track.IsPlaying then
+                track.Stopped:Once(function()
+                    state_ref.stopped_at = state_ref.stopped_at or tick();
+                end);
+            else
+                state_ref.stopped_at = played_at;
+            end;
+        end;
 
         do
             local move_key = pot_name or data.name;
@@ -46102,6 +46144,8 @@ return function(tab)
 
     reactions:newSlider("feint_reaction_chance", "Feint Reaction Chance", 100, 0, 100, 0, true, "%", nil,
         "Chance to react to an enemy's feint and not parry it. 100% = never parries a feint it sees. Lower = sometimes gets baited, which looks more human.");
+    reactions:newToggle("detect_early_feints", "Detect Early Feints", true,
+        "Also treat an attack whose animation gets stopped before the hit as a feint (early feints often don't play the feint sound). Uses Feint Reaction Chance / Time.");
     reactions:newSlider("feint_reaction_ms", "Feint Reaction Time", 0, 0, 400, 0, true, "ms", nil,
         "How long after a feint before Auto Parry reacts to it. 0 = instant. A parry due inside this window still goes out, like a human getting baited by a fast feint.");
     reactions:newDivider();

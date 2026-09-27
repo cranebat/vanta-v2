@@ -234,6 +234,8 @@ return function(tab)
 
     reactions:newSlider("feint_reaction_chance", "Feint Reaction Chance", 100, 0, 100, 0, true, "%", nil,
         "Chance to react to an enemy's feint and not parry it. 100% = never parries a feint it sees. Lower = sometimes gets baited, which looks more human.");
+    reactions:newToggle("detect_early_feints", "Detect Early Feints", true,
+        "Also treat an attack whose animation gets stopped before the hit as a feint (early feints often don't play the feint sound). Uses Feint Reaction Chance / Time.");
     reactions:newSlider("feint_reaction_ms", "Feint Reaction Time", 0, 0, 400, 0, true, "ms", nil,
         "How long after a feint before Auto Parry reacts to it. 0 = instant. A parry due inside this window still goes out, like a human getting baited by a fast feint.");
     reactions:newDivider();
