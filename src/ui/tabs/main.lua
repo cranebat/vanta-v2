@@ -202,11 +202,11 @@ return function(tab)
     ap_breaker_dependency_box:newDropdown("aggressive_3_break_on", "Break On", {
         "Criticals",
         "Untagged",
-        "Spells",
+        "Mantras",
         "Bells",
         "M1s",
     }, {
-        "Spells",
+        "Mantras",
         "M1s",
     }, true, "Types of anims that the breaker will affect, Some anims are currently untagged.")
 

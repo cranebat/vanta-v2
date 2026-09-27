@@ -1,8 +1,11 @@
--- Vanta: Auto Parry moved out of the Combat tab into its own tab (code unchanged).
+-- Vanta: Auto Parry tab.
+--   Left:  Main (everyday settings), Advanced (tuning most people never touch), Other.
+--   Right: Reactions, Humanize, PVE, PVP.
 return function(tab)
 
     local autoparry_tabbox = tab:newTabbox("Auto Parry", false);
     local ap_main = autoparry_tabbox:newTab("Main");
+    local advanced = autoparry_tabbox:newTab("Advanced");
 
     ap_main:newToggleWithKeybind("auto_parry", "Auto Parry", false, "Automatically parry/defend incoming attacks.", function(val) 
         task.delay(1, function()
@@ -23,57 +26,6 @@ return function(tab)
 
     local auto_parry_dependency_box = ap_main:newDependencyBox("auto_parry");
     auto_parry_dependency_box:newDivider();
-    auto_parry_dependency_box:newSlider("dont_process_players_over_studs", "Dont Process Players Over", 500, 1, 10000, 1, true, "s");
-    auto_parry_dependency_box:newSlider("dont_process_mobs_over_studs", "Dont Process Mobs Over", 2000, 1, 10000, 1, true, "s");
-    auto_parry_dependency_box:newSlider("task_concurrency", "Task Concurrency", 20, 15, 750, 0, true, " actions");
-    auto_parry_dependency_box:newToggleWithKeybind("basic_validation",       "Anti AP Breaker", true, "", nil, true);
-    local anti_ap_breaker, raw_anti_ap_breaker = ap_main:newDependencyBox();
-
-    raw_anti_ap_breaker:SetupDependencies({
-        {aztup_toggles.basic_validation, true},
-        {aztup_toggles.auto_parry, true}
-    })
-
-    anti_ap_breaker:newToggleWithKeybind("aggressive_validation",       "More Aggressive Checks", false, "", nil, true);
-    anti_ap_breaker:newToggle("anti_ap_breaker_debug",       "Validation Notifications", false, "", nil, false);
-    anti_ap_breaker:newToggleWithKeybind("reveal_animations",       "Reveal Animations", true, "", nil, true);
-
-    anti_ap_breaker:newDropdown('validation_filters', 'Validation Filters', {
-        
-        
-        "WT <= X (WT = WeightTarget)",
-        "S >= X (S = Speed)",
-        "Priority Hiding",
-        "Core Priority",
-        "Idle Priority",
-        "Length <= Xms",
-        "Fadetime",
-    },{
-        "WT <= X (WT = WeightTarget)",
-        "Core Priority",
-        "Idle Priority",
-        "Priority Hiding",
-        "S >= X (S = Speed)",
-        "Fadetime"
-    }, true, 'Filters for AP breaker.')
-
-    anti_ap_breaker:newDropdown('validation_log_filters', 'Validation Log Filters', {
-        
-        
-        "WT <= X (WT = WeightTarget)",
-        "S >= X (S = Speed)",
-        "Priority Hiding",
-        "Core Priority",
-        "Idle Priority",
-        "Length <= Xms",
-        "Fadetime",
-    },{
-        "WT <= X (WT = WeightTarget)",
-        "Core Priority",
-        "Idle Priority",
-        "Priority Hiding",
-        "S >= X (S = Speed)"
-    }, true, 'Logging Filters for AP breaker.')
 
     auto_parry_dependency_box:newToggleWithKeybind("auto_parry_debug",      "Debug Notifications", false, "Gives debug notifications.", function(val)
         if not val then return end
@@ -82,7 +34,6 @@ return function(tab)
         messagebox("You have 'Silent Mode' enabled, You cannot use Debug Notifications with 'Silent Mode'.", "Vanta", 0) 
         aztup_toggles.auto_parry_debug:SetValue(false);
     end, false);    
-    auto_parry_dependency_box:newToggleWithKeybind("log_speed_changes",     "Debug Speed Changes", false, "Gives AP debug notifs on speed changes.", nil, false);    
 
     auto_parry_dependency_box:newToggleWithKeybind("ap_randomization", "Humanization", false, "Adds extra randomization to actions.", function(val) end, false);
     
@@ -132,30 +83,18 @@ return function(tab)
     }, true, 'Allowed targets that Auto Parry will Parry')
 
     local feint_chance_dependency_box, raw_feint_chance = ap_main:newDependencyBox();
-    
-    
-    
 
-    
-    
-    
-    
-    
-    
-    
-    
-    
     feint_chance_dependency_box:newDropdown('blocked_auto_feint_moves', 'Dont Against Types', {
         "Critical",
         "Untagged",
-        "Spell",
+        "Mantra",
         "M1",
     },{}, true, "Blocked Auto Feint Types, Some moves are currently untagged or skip.");
 
     feint_chance_dependency_box:newDropdown('auto_feint_own_tags', 'Auto Feint Our Move Types', {
         "M1",
-        "Spell",
-    },{"M1", "Spell"}, true, "Only feint our own attack if it's one of these move types.");
+        "Mantra",
+    },{"M1", "Mantra"}, true, "Only feint our own attack if it's one of these move types.");
     feint_chance_dependency_box:newDivider();
 
     feint_chance_dependency_box:newSlider("feint_chance", "Feint Chance", 100, 0, 100, 1, true, "%");
@@ -165,7 +104,82 @@ return function(tab)
         {aztup_toggles.auto_parry, true}
     })
 
-    local speed_max, raw_speed_max = ap_main:newDependencyBox("validation_filters", "S >= X (S = Speed)", true);
+    ------------------------------------------------------------------ Advanced
+    advanced:newLabel("Fine tuning. The defaults are fine for most people.", true);
+
+    advanced:newSlider("apc_timing_offset", "M1 Timing Offset", 0, -150, 150, 0, true, "ms", nil,
+        "Shift parries on player weapon M1s earlier (-) or later (+).");
+    advanced:newSlider("unparriable_dodge_offset", "Unparriable Move Latency", 0, -200, 200, 0, true, "ms", nil,
+        "Shift the dodge for moves you can't parry (Ice Eruption, Tornado) earlier (-) or later (+).");
+    advanced:newDropdown("unknown_mantra_mode", "Untimed Mantras", { "Ignore", "Dodge" }, "Ignore", false,
+        "Mantras with no timing: ignore them, or roll after the delay below if in range.");
+    advanced:newSlider("unknown_mantra_dodge_delay", "Untimed Mantra Dodge Delay", 450, 100, 1500, 0, true, "ms");
+    advanced:newSlider("unknown_mantra_range", "Untimed Mantra Range", 40, 10, 150, 0, true, " studs");
+    advanced:newDivider();
+
+    advanced:newSlider("feint_reaction_jitter", "Feint Reaction Jitter", 0, 0, 150, 0, true, "ms", nil,
+        "Random +/- added to Feint Reaction Time each time.");
+    advanced:newSlider("block_early_ms", "Block Early By", 200, 60, 500, 0, true, "ms", nil,
+        "Block Instead Of Parry: how long before the hit to start holding block (too late and it becomes a parry).");
+    advanced:newSlider("block_hold_ms", "Block Hold After Hit", 250, 50, 800, 0, true, "ms", nil,
+        "Block Instead Of Parry: how long to keep holding block after the hit.");
+    advanced:newSlider("misstime_early_ms", "Misstime Early By", 220, 150, 500, 0, true, "ms", nil,
+        "Fake Misstime Parry: how long before the hit the fake parry tap happens.");
+    advanced:newDivider();
+
+    advanced:newSlider("dont_process_players_over_studs", "Dont Process Players Over", 500, 1, 10000, 1, true, "s");
+    advanced:newSlider("dont_process_mobs_over_studs", "Dont Process Mobs Over", 2000, 1, 10000, 1, true, "s");
+    advanced:newSlider("task_concurrency", "Task Concurrency", 20, 15, 750, 0, true, " actions");
+    advanced:newToggleWithKeybind("log_speed_changes", "Debug Speed Changes", false, "Gives AP debug notifs on speed changes.", nil, false);
+    advanced:newToggle("apc_debug_skips", "Debug Skipped Anims", false,
+        "With Debug Notifications on, also show animations Auto Parry ignored and why.");
+    advanced:newDivider();
+
+    advanced:newToggleWithKeybind("basic_validation",       "Anti AP Breaker", true, "", nil, true);
+    local anti_ap_breaker, raw_anti_ap_breaker = advanced:newDependencyBox();
+
+    raw_anti_ap_breaker:SetupDependencies({
+        {aztup_toggles.basic_validation, true},
+    })
+
+    anti_ap_breaker:newToggleWithKeybind("aggressive_validation",       "More Aggressive Checks", false, "", nil, true);
+    anti_ap_breaker:newToggle("anti_ap_breaker_debug",       "Validation Notifications", false, "", nil, false);
+    anti_ap_breaker:newToggleWithKeybind("reveal_animations",       "Reveal Animations", true, "", nil, true);
+
+    anti_ap_breaker:newDropdown('validation_filters', 'Validation Filters', {
+        "WT <= X (WT = WeightTarget)",
+        "S >= X (S = Speed)",
+        "Priority Hiding",
+        "Core Priority",
+        "Idle Priority",
+        "Length <= Xms",
+        "Fadetime",
+    },{
+        "WT <= X (WT = WeightTarget)",
+        "Core Priority",
+        "Idle Priority",
+        "Priority Hiding",
+        "S >= X (S = Speed)",
+        "Fadetime"
+    }, true, 'Filters for AP breaker.')
+
+    anti_ap_breaker:newDropdown('validation_log_filters', 'Validation Log Filters', {
+        "WT <= X (WT = WeightTarget)",
+        "S >= X (S = Speed)",
+        "Priority Hiding",
+        "Core Priority",
+        "Idle Priority",
+        "Length <= Xms",
+        "Fadetime",
+    },{
+        "WT <= X (WT = WeightTarget)",
+        "Core Priority",
+        "Idle Priority",
+        "Priority Hiding",
+        "S >= X (S = Speed)"
+    }, true, 'Logging Filters for AP breaker.')
+
+    local speed_max, raw_speed_max = advanced:newDependencyBox("validation_filters", "S >= X (S = Speed)", true);
     speed_max:newSlider("anti_ap_breaker_max_speed", "Max Speed", 5, 1, 100, 1, true, "x");
     raw_speed_max:SetupDependencies({{ 
         aztup_options.validation_filters, "S >= X (S = Speed)"
@@ -173,7 +187,7 @@ return function(tab)
         aztup_toggles.basic_validation, true
     }}); 
 
-    local weight_target_selector, raw_weight_target = ap_main:newDependencyBox("validation_filters", "WT <= X (WT = WeightTarget)", true);
+    local weight_target_selector, raw_weight_target = advanced:newDependencyBox("validation_filters", "WT <= X (WT = WeightTarget)", true);
     weight_target_selector:newSlider("anti_ap_breaker_minimum_wt", "Minimum WT", 10, 10, 100, 1, true, "x Weight");
     raw_weight_target:SetupDependencies({{ 
         aztup_options.validation_filters, "WT <= X (WT = WeightTarget)"
@@ -181,7 +195,7 @@ return function(tab)
         aztup_toggles.basic_validation, true
     }});
 
-    local time_x_ms, raw_time_x_ms = ap_main:newDependencyBox("validation_filters", "Length <= Xms", true);
+    local time_x_ms, raw_time_x_ms = advanced:newDependencyBox("validation_filters", "Length <= Xms", true);
     time_x_ms:newSlider("anti_ap_breaker_length_ms", "Minimum Length", 50, 1, 500, 1, true, "ms");
     raw_time_x_ms:SetupDependencies({{ 
         aztup_options.validation_filters, "Length <= Xms"
@@ -189,47 +203,35 @@ return function(tab)
         aztup_toggles.basic_validation, true
     }});
 
-    -- Vanta: right-hand column. Reactions (new), Humanization, PVE, PVP used to all be
-    -- stacked in the left tabbox, leaving the right side nearly empty.
+    ------------------------------------------------------------------ Right column
     local reactions_tabbox = tab:newTabbox("Reactions", true);
     local reactions = reactions_tabbox:newTab("Reactions");
 
     reactions:newDropdown("reaction_targets", "Apply Reactions To", { "PVP", "PVE" }, { "PVP", "PVE" }, true,
-        "Which fights the block / roll / misstime reactions below are used in.");
+        "Which fights the reactions below are used in.");
 
-    reactions:newSlider("feint_reaction_ms", "Feint Reaction", 0, 0, 400, 0, true, "ms", nil,
-        "How long after an enemy feints before Auto Parry reacts and drops the parry. 0 = instant. A parry due inside this window still goes out (you get baited, like a person would).");
-    reactions:newSlider("feint_reaction_jitter", "Feint Reaction Jitter", 0, 0, 150, 0, true, "ms", nil,
-        "Random +/- added to Feint Reaction each time.");
+    reactions:newSlider("feint_reaction_chance", "Feint Reaction Chance", 100, 0, 100, 0, true, "%", nil,
+        "Chance to react to an enemy's feint and not parry it. 100% = never parries a feint it sees. Lower = sometimes gets baited, which looks more human.");
+    reactions:newSlider("feint_reaction_ms", "Feint Reaction Time", 0, 0, 400, 0, true, "ms", nil,
+        "How long after a feint before Auto Parry reacts to it. 0 = instant. A parry due inside this window still goes out, like a human getting baited by a fast feint.");
     reactions:newDivider();
 
     reactions:newSlider("block_instead_chance", "Block Instead Of Parry", 0, 0, 100, 0, true, "%", nil,
         "Chance to hold block through the hit instead of parrying.");
-    reactions:newSlider("block_early_ms", "Block Early By", 200, 60, 500, 0, true, "ms", nil,
-        "How long before the hit to start holding block (too late and it becomes a parry).");
-    reactions:newSlider("block_hold_ms", "Block Hold After Hit", 250, 50, 800, 0, true, "ms", nil,
-        "How long to keep holding block after the hit.");
-    reactions:newDivider();
-
     reactions:newSlider("dodge_instead_chance", "Dodge Instead Of Parry", 0, 0, 100, 0, true, "%", nil,
         "Chance to roll instead of parrying (only when a roll is available).");
-    reactions:newDivider();
-
     reactions:newSlider("misstime_chance", "Fake Misstime Parry", 0, 0, 100, 0, true, "%", nil,
         "Chance to tap block early (looks like a mistimed parry), then roll when the hit actually lands.");
-    reactions:newSlider("misstime_early_ms", "Misstime Early By", 220, 150, 500, 0, true, "ms", nil,
-        "How long before the hit the fake parry tap happens.");
 
     local randomization_dependency_box = reactions_tabbox:newTab("Humanize"):newDependencyBox("ap_randomization");
     randomization_dependency_box:newLabel("Turn on Humanization (Main tab) to use these.", true);
 
     randomization_dependency_box:newSlider("parry_to_dodge_chance_undefined",    "Force Dodge Chance (Untagged)", 0, 0, 100, 1, true, "%");
-    randomization_dependency_box:newSlider("parry_to_dodge_chance_spells",      "Force Dodge Chance (Spells)", 0, 0, 100, 1, true, "%");
+    randomization_dependency_box:newSlider("parry_to_dodge_chance_mantra",      "Force Dodge Chance (Mantras)", 0, 0, 100, 1, true, "%");
     randomization_dependency_box:newSlider("parry_to_dodge_chance_critical",   "Force Dodge Chance (Crits)", 0, 0, 100, 1, true, "%");
     randomization_dependency_box:newSlider("parry_to_dodge_chance_m1",          "Force Dodge Chance (M1)", 0, 0, 100, 1, true, "%");
     randomization_dependency_box:newSlider("parry_to_fallback_chance",   "Parry -> Fallback Chance", 0, 0, 100, 1, true, "%");
 
-    randomization_dependency_box:newSlider("bluff_feint_chance", "Bluff Feint Chance", 0, 0, 100, 1, true, "%");
     randomization_dependency_box:newToggle("only_convert_dodge_if_possible", "Only Convert Dodge If Possible", false, "Only converts parries to dodges if the dodge is possible.", nil);
 
     local function create_settings_page(tab, id)
@@ -246,37 +248,10 @@ return function(tab)
         tab:newSlider(id.."min_roll_cancel_delay", "Min Cancel Delay", 70, 1, 200, 1, true, "ms");
         tab:newSlider(id.."roll_cancel_chance", "Cancel Chance", 90, 1, 100, 1, true, "%");
         tab:newSlider(id.."parry_chance", "Parry Chance", 100, 1, 100, 1, true, "%");
-
-        
-        
-        
-        
-        
-        
-        
-        
-        
     end
 
     create_settings_page(reactions_tabbox:newTab("PVE"), "pve_")
     create_settings_page(reactions_tabbox:newTab("PVP"), "pvp_")
-
-    -- Vanta: APC fallback timings (weapon swings with no exact timing).
-    local apc = autoparry_tabbox:newTab("APC");
-    apc:newToggle("apc_fallback_enabled", "APC Fallback Timings", true,
-        "Parry untimed weapon swings using APC's per-weapon windup formulas.");
-    apc:newSlider("apc_timing_offset", "APC Timing Offset", 0, -150, 150, 0, true, "ms", nil,
-        "Shift every APC fallback parry earlier (-) or later (+).");
-    apc:newDivider();
-    apc:newSlider("unparriable_dodge_offset", "Unparriable Dodge Offset", 0, -200, 200, 0, true, "ms", nil,
-        "Shift the dodge for unparriable moves (Ice Eruption, Tornado) earlier (-) or later (+).");
-    apc:newDropdown("unknown_mantra_mode", "Untimed Mantras", { "Ignore", "Dodge" }, "Ignore", false,
-        "Mantras with no timing: ignore them, or roll after the delay below if in range.");
-    apc:newSlider("unknown_mantra_dodge_delay", "Untimed Mantra Dodge Delay", 450, 100, 1500, 0, true, "ms");
-    apc:newSlider("unknown_mantra_range", "Untimed Mantra Range", 40, 10, 150, 0, true, " studs");
-    apc:newDivider();
-    apc:newToggle("apc_debug_skips", "Debug Skipped Anims", false,
-        "With Debug Notifications on, also show animations the fallback ignored and why.");
 
 
     local other = autoparry_tabbox:newTab("Other");
@@ -464,30 +439,6 @@ end;
 
     other:newToggle("info_logger", "Timing Logger", false, "Log anims to console.", nil);
     other:newSlider("info_logger_range", "Timing Logger Range", 1, 1, 500, 0, true, "s");
-    local timing_builder = require("@src/features/auto-parry/builder");
-    local timings = tab:newGroupBox("Timing Builder", true);
-    timings:newToggleWithKeybind("show_timing_builder", "Show Timing Builder", false, "Make your own parry timings. Pick an animation it watched (or click one in the Timing Logger), place actions on the timeline, then Save.", function(val)
-        timing_builder:set_visible(val);
-    end);
-    timing_builder.on_close = function()
-        aztup_toggles.show_timing_builder:SetValue(false);
-    end;
-
-    timings:newButton("Reload Timings", function()
-        xpcall(getgenv().load_timings, warn); 
-    end);
-
-    timings:newButton("Auto Hot Reload Timings [slow]", function()
-        local last_update = tick();
-        aztup.maid:give_task(services.RunService.RenderStepped:Connect(function()   
-            if tick() - last_update <= 5 then return end
-            if not getgenv().dev_tools_data or not getgenv().dev_tools_data["hot-reload-timings"] then return end
-
-            last_update = tick();
-            xpcall(getgenv().load_timings, warn);
-        end));   
-    end);
-
     if can_edit_internal_timings or isfile("builder.rbxm") then
         local debug = tab:newGroupBox("Debug", true);
 

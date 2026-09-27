@@ -101,7 +101,7 @@ end
 local function dodge_data(name, when, size)
     return {
         source = "apc_fallback",
-        action_type = "Spell",
+        action_type = "Mantra",
         name = name,
         run = function(action)
             action.when = math.max(0, when + ((aztup.flags.unparriable_dodge_offset or 0) / 1000));

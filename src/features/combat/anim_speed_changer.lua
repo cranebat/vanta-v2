@@ -4,7 +4,7 @@ local random = Random.new();
 feature.toggle_conversion_map = {
     ["Critical"] = "Criticals",
     ["Untagged"] = "Untagged",
-    ["Spell"] = "Spells",
+    ["Mantra"] = "Mantras",
     ["Bell"] = "Bells",
     ["M1"] = "M1s"
 }
@@ -12,7 +12,7 @@ feature.toggle_conversion_map = {
 feature.slider_conversion_map = {
     ["Critical"] = "anim_critical_speed", 
     ["Untagged"] = "anim_untagged_speed",
-    ["Spell"] = "anim_spell_speed",
+    ["Mantra"] = "anim_mantra_speed",
     ["Bell"] = "anim_bell_speed",
     ["M1"] = "anim_m1_speed"
 }

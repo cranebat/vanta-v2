@@ -444,7 +444,7 @@ end
     function AnimatorHandler:cancel_feinted_tracks(playing_tracks)
         self.last_feint_at = tick();
 
-        -- Vanta: Feint Reaction. How long after the feint is detected before Auto
+        -- Vanta: Feint Reaction Time. How long after the feint is detected before Auto
         -- Parry reacts to it (drops the pending parry). 0 = instant (stock behaviour).
         -- A parry due inside this window still goes out, like a human getting baited.
         local reaction_ms = aztup.flags.feint_reaction_ms or 0;
@@ -462,10 +462,12 @@ end
             local action = state.action;
             if action and action.ignore_feints then continue end
 
-            if state.action_type == "M1" and aztup.flags.ap_randomization and math.random() * 100 <= aztup.flags.bluff_feint_chance then
-                debug_print("[Auto Feint] Bluffing through a detected feint.");
+            -- Vanta: Feint Reaction Chance (100% = always react, i.e. never parry a
+            -- feint it detects; lower = sometimes gets baited). Replaces Bluff Feint Chance.
+            if random:NextNumber(0, 100) >= (aztup.flags.feint_reaction_chance or 100) then
+                debug_print("[Feint] Not reacting to this feint (Feint Reaction Chance).");
                 continue
-end
+            end
 
             table.insert(to_cancel, track);
         end
@@ -914,7 +916,7 @@ end
 
     local feint_cooldown_effects = {
         M1 = "FeintCool",
-        Spell = "SpellFeintCooldown",
+        Mantra = "SpellFeintCooldown", -- game's own effect name
     };
 
     local function on_feint_cooldown(own_action_type)
@@ -1530,6 +1532,12 @@ data = table.clone(data);
 
         end
 
+        -- Vanta: Rain's timing data tags mantras as "Spell"; Deepwoken calls them
+        -- mantras, and so does every setting in the menu.
+        if data.action_type == "Spell" then
+            data.action_type = "Mantra";
+        end;
+
         local str = pot_name or data.name or data.actions and data.actions[1] and data.actions[1].name;
         if str and aztup_options.blocked_timings.Value[str] then return end
     
@@ -1552,7 +1560,7 @@ data = table.clone(data);
             if aztup_options.aggressive_3_break_on.Value[({
                 ["Critical"] = "Criticals",
                 ["Untagged"] = "Untagged",
-                ["Spell"] = "Spells",
+                ["Mantra"] = "Mantras",
                 ["Bell"] = "Bells",
                 ["M1"] = "M1s"
             })[action_type] ] then

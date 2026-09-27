@@ -36,7 +36,7 @@ local SKIP_PREFIXES = {
     "@src/features/auto-parry/fallbacks/", -- loaded by the handlers
     "@src/features/auto-parry/services/",
     "@src/features/auto-parry/util/",
-    "@src/features/auto-parry/builder",    -- locked-feature stub, used by the Combat tab
+    "@src/features/auto-parry/builder",    -- timing builder (removed); skip if an old copy is still on disk
 };
 
 local function skipped(path)

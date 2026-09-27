@@ -89,7 +89,7 @@ return function(tab)
     type_dependency_box:newDropdown("anim_speed_changer_types", "Affected Anim Types", {
         "Criticals",
         "Untagged",
-        "Spells",
+        "Mantras",
         "Bells",
         "M1s",
     },{}, true, "Types of anims that the speed changer will affect, Some anims are currently untagged.");
@@ -107,7 +107,7 @@ return function(tab)
     end
     make_speed_slider("anim_critical_speed", "Criticals");
     make_speed_slider("anim_untagged_speed", "Untagged");
-    make_speed_slider("anim_spell_speed", "Spells");
+    make_speed_slider("anim_mantra_speed", "Mantras");
     make_speed_slider("anim_bell_speed", "Bells");
     make_speed_slider("anim_m1_speed", "M1s");
 
@@ -177,7 +177,7 @@ local silent_aim = tab:newGroupBox("Silent Aim", true);
         "Critical",
         "Untagged",
         "Effects",
-        "Spell",
+        "Mantra",
         "Parts",
         "Bell",
         "M1",
