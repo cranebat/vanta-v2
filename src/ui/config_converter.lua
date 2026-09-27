@@ -1,8 +1,8 @@
 return function()
-    if isfile("Project Rain/converted.txt") then
+    if isfile("Vanta/converted.txt") then
         return    
 else
-        writefile("Project Rain/converted.txt", "true");
+        writefile("Vanta/converted.txt", "true");
     end;
 
     if isfolder("ProjectRainRewrite") and isfolder("ProjectRainRewrite/settings") then
@@ -69,9 +69,9 @@ end;
             end;
 
             local name = file:gsub("/", "\\"):split("ProjectRainRewrite\\settings\\")[2]:gsub(".json", "");
-            if isfile("Project Rain\\Deepwoken-Config\\settings\\PRLegacyConvert-" .. name .. ".json") then continue end
+            if isfile("Vanta\\Deepwoken-Config\\settings\\PRLegacyConvert-" .. name .. ".json") then continue end
             Logger:long_notify("Converted config: " .. name);
-            writefile("Project Rain\\Deepwoken-Config\\settings\\PRLegacyConvert-" .. name .. ".json", game:GetService("HttpService"):JSONEncode(converted_config));
+            writefile("Vanta\\Deepwoken-Config\\settings\\PRLegacyConvert-" .. name .. ".json", game:GetService("HttpService"):JSONEncode(converted_config));
         end;
     end;
 end

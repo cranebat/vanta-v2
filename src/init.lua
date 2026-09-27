@@ -17,8 +17,12 @@
         the whole script from booting.
       - Assets it writes (fonts, sounds, the race-morph GUI) are embedded by
         build/bundle.py, same as Rain's own bundler did.
-      - Everything else (folder setup, the aztup table + detach-on-reload, TOS/config
-        picker, farms, feature loader, Auto Parry, UI) is the same sequence as stock.
+      - Removed Rain's first-run Terms of Service screen and the premade-config download
+        from Rain's server (files.project-rain.net).
+      - Workspace folder is "Vanta" (was "Project Rain"); existing files are copied over
+        once on first run. Log nuker (utility/security.lua) is hooked first thing.
+      - Everything else (folder setup, the aztup table + detach-on-reload, farms, feature
+        loader, Auto Parry, UI) is the same sequence as stock.
 ]]
 
 if not game:IsLoaded() then
@@ -26,30 +30,67 @@ if not game:IsLoaded() then
 end;
 
 env = getgenv();
+
+-- Log nuker (utility/security.lua). Hook once per executor session - re-running the
+-- loadstring shouldn't stack another hook on top of the previous one.
+if not env.vanta_log_nuker_active then
+    env.vanta_log_nuker_active = require("@src/utility/security");
+end;
+
 if not LPH_OBFUSCATED then
     require(LPH_ENCSTR("@src/utility/librarys/luraph_sdk"));
 end;
 
+-- One-time migration: the workspace folder used to be "Project Rain". If that exists
+-- and "Vanta" doesn't yet, copy everything across (configs, sounds, fonts, farm state)
+-- so nothing is lost. The old folder is left in place, untouched.
+xpcall(function()
+    local OLD_ROOT, NEW_ROOT = "Project " .. "Rain", "Vanta";
+    if not isfolder(OLD_ROOT) or isfolder(NEW_ROOT) then
+        return;
+    end;
+
+    local copied, failed = 0, 0;
+    local function copy_dir(from, to)
+        makefolder(to);
+        for _, path in listfiles(from) do
+            local name = path:gsub("\\", "/"):match("([^/]+)$");
+            local src, dst = from .. "/" .. name, to .. "/" .. name;
+            if isfolder(src) then
+                copy_dir(src, dst);
+            else
+                local ok = pcall(function()
+                    writefile(dst, readfile(src));
+                end);
+                if ok then copied += 1 else failed += 1 end;
+            end;
+        end;
+    end;
+
+    copy_dir(OLD_ROOT, NEW_ROOT);
+    print(string.format("[vanta] migrated %d files from '%s' to '%s' (%d failed)", copied, OLD_ROOT, NEW_ROOT, failed));
+end, warn);
+
 xpcall(function()
     for _, path in {
-        "Project Rain",
-        "Project Rain/Assets",
-        "Project Rain/Assets/Hit Sounds",
-        "Project Rain/Assets/Parry Sounds",
-        "Project Rain/Fonts",
-        "Project Rain/Deepwoken-Config",
-        "Project Rain/Deepwoken-Config/CustomGlobalOrnaments",
-        "Project Rain/Deepwoken-Config/CustomRaces",
-        "Project Rain/Deepwoken-Config/Preferences",
-        "Project Rain/Deepwoken-Config/CustomEnchantments",
+        "Vanta",
+        "Vanta/Assets",
+        "Vanta/Assets/Hit Sounds",
+        "Vanta/Assets/Parry Sounds",
+        "Vanta/Fonts",
+        "Vanta/Deepwoken-Config",
+        "Vanta/Deepwoken-Config/CustomGlobalOrnaments",
+        "Vanta/Deepwoken-Config/CustomRaces",
+        "Vanta/Deepwoken-Config/Preferences",
+        "Vanta/Deepwoken-Config/CustomEnchantments",
     } do
         if not isfolder(path) then
             makefolder(path);
         end;
     end;
 
-    if not isfile("Project Rain/script_state") then
-        writefile("Project Rain/script_state", game:GetService("HttpService"):JSONEncode({
+    if not isfile("Vanta/script_state") then
+        writefile("Vanta/script_state", game:GetService("HttpService"):JSONEncode({
             ["last_executed"] = tick(),
             ["last_executed_version"] = "vanta-v2-dev",
             ["build_id"] = game:GetService("HttpService"):GenerateGUID(false),
@@ -106,7 +147,6 @@ env.aztup = {
 user_service = { is_valid = function() return true end };
 getgenv().user_service = user_service;
 
-local hasnt_accepted_tos = not isfile("Project Rain/tos_accepted_82126_0822UTC0.txt");
 
 env.persistent_data = require("@src/utility/persistent_data");
 env.Logger = require(LPH_ENCSTR("@src/utility/logger"));
@@ -146,61 +186,38 @@ function decode_asset(asset)
 end;
 
 task.spawn(pcall, function()
-    if not isfile("Project Rain/Assets/proximity.mp3") then
-        writefile("Project Rain/Assets/proximity.mp3", decode_asset(inline_asset_b96("@assets/proximity.mp3")));
+    if not isfile("Vanta/Assets/proximity.mp3") then
+        writefile("Vanta/Assets/proximity.mp3", decode_asset(inline_asset_b96("@assets/proximity.mp3")));
     end;
-    if not isfile("Project Rain/Assets/Parry Sounds/Ultrakill Parry.mp3") then
-        writefile("Project Rain/Assets/Parry Sounds/Ultrakill Parry.mp3", decode_asset(inline_asset_b96("@assets/Ultrakill Parry.mp3")));
+    if not isfile("Vanta/Assets/Parry Sounds/Ultrakill Parry.mp3") then
+        writefile("Vanta/Assets/Parry Sounds/Ultrakill Parry.mp3", decode_asset(inline_asset_b96("@assets/Ultrakill Parry.mp3")));
     end;
-    if not isfile("Project Rain/Assets/notification.mp3") then
-        writefile("Project Rain/Assets/notification.mp3", decode_asset(inline_asset_b96("@assets/notification.mp3")));
+    if not isfile("Vanta/Assets/notification.mp3") then
+        writefile("Vanta/Assets/notification.mp3", decode_asset(inline_asset_b96("@assets/notification.mp3")));
     end;
-    if not isfile("Project Rain/Deepwoken-Config/GuiItself.rbxm") then
-        writefile("Project Rain/Deepwoken-Config/GuiItself.rbxm", decode_asset(inline_asset_b96("@assets/DeepwokenMorphs/GuiItself.rbxm")));
+    if not isfile("Vanta/Deepwoken-Config/GuiItself.rbxm") then
+        writefile("Vanta/Deepwoken-Config/GuiItself.rbxm", decode_asset(inline_asset_b96("@assets/DeepwokenMorphs/GuiItself.rbxm")));
     end;
 end);
 
 -- Fonts are written synchronously: custom_font.lua (required right below) loads them.
-if not isfile("Project Rain/Fonts/Lexend.ttf") then
-    writefile("Project Rain/Fonts/Lexend.ttf", decode_asset(inline_asset_b96("@assets/lexend.ttf")));
+if not isfile("Vanta/Fonts/Lexend.ttf") then
+    writefile("Vanta/Fonts/Lexend.ttf", decode_asset(inline_asset_b96("@assets/lexend.ttf")));
 end;
-if not isfile("Project Rain/Fonts/Lexend-Bold.ttf") then
-    writefile("Project Rain/Fonts/Lexend-Bold.ttf", decode_asset(inline_asset_b96("@assets/lexend-bold.ttf")));
+if not isfile("Vanta/Fonts/Lexend-Bold.ttf") then
+    writefile("Vanta/Fonts/Lexend-Bold.ttf", decode_asset(inline_asset_b96("@assets/lexend-bold.ttf")));
 end;
-if not isfile("Project Rain/Fonts/Lexend-Medium.ttf") then
-    writefile("Project Rain/Fonts/Lexend-Medium.ttf", decode_asset(inline_asset_b96("@assets/lexend-medium.ttf")));
+if not isfile("Vanta/Fonts/Lexend-Medium.ttf") then
+    writefile("Vanta/Fonts/Lexend-Medium.ttf", decode_asset(inline_asset_b96("@assets/lexend-medium.ttf")));
 end;
 
 lexend = require("@src/utility/custom_font");
 
-if hasnt_accepted_tos then
-    pcall(function()
-        require(LPH_ENCSTR("@src/ui/tos"));
-
-        if not isfile("Project Rain\\Deepwoken-Config\\settings\\default_conf.json")
-            and not isfile("Project Rain/inquired_about_default_config.txt")
-            and not isfile("Project Rain\\Deepwoken-Config\\settings\\autoload.txt") then
-            writefile("Project Rain/inquired_about_default_config.txt", "true");
-            require(LPH_ENCSTR("@src/ui/choice_frame")).set(nil,
-                function()
-                    local ok, config_content = pcall(game.HttpGet, game, "https://files.project-rain.net/configs/premade.json");
-                    if ok then
-                        writefile("Project Rain\\Deepwoken-Config\\settings\\default_conf.json", config_content);
-                        writefile("Project Rain\\Deepwoken-Config\\settings\\autoload.txt", "default_conf");
-                    end;
-                end,
-                function() end
-            );
-        end;
-    end);
-
-    task.wait(1.5);
-end;
 
 env.signal = require("@src/utility/signal");
 loaded_signal = env.signal.new();
 env.LOAD_START_TIME = tick();
-aztup.silent_mode = isfile("Project Rain/silent_mode_toggle");
+aztup.silent_mode = isfile("Vanta/silent_mode_toggle");
 aztup.maid = require("@src/utility/maid").new();
 
 if not aztup.ui then
@@ -250,7 +267,7 @@ end;
 
 if not fflags:get("dont_notify_on_first_exec") and aztup.silent_mode then
     if not persistent_data:get("has_executed_before") then
-        messagebox("You have 'Silent Mode' enabled, which means you won't see the UI until you open it with the keybind. This notification is disable-able in the fast flags area of UI.", "Project Rain", 0);
+        messagebox("You have 'Silent Mode' enabled, which means you won't see the UI until you open it with the keybind. This notification is disable-able in the fast flags area of UI.", "Vanta", 0);
     end;
 
     persistent_data:set("has_executed_before", true);

@@ -4,11 +4,11 @@
 
 
 
-local dev_file = getgenv().dev_file or string.format("Project Rain/logs/client-%s", tostring(tick()))
+local dev_file = getgenv().dev_file or string.format("Vanta/logs/client-%s", tostring(tick()))
 
 if not LPH_OBFUSCATED then
-    if not isfolder("Project Rain/logs") then
-        makefolder("Project Rain/logs");
+    if not isfolder("Vanta/logs") then
+        makefolder("Vanta/logs");
     end;
 
     if not getgenv().dev_file then

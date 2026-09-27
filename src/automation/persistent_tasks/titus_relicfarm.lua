@@ -508,7 +508,7 @@ struct = automation_struct:construct({
                         local server = '%s';
                         local slot = "%s";
                     
-                        queueonteleport('if game.PlaceId == 4111023553 then return; end; xpcall(function() local sound = Instance.new("Sound", game:GetService("CoreGui")); game:GetService("Debris"):AddItem(sound, 6); sound.Volume = 1.3; sound.SoundId = getcustomasset("Project Rain/assets/notification.mp3"); sound:Play(); end, warn);')
+                        queueonteleport('if game.PlaceId == 4111023553 then return; end; xpcall(function() local sound = Instance.new("Sound", game:GetService("CoreGui")); game:GetService("Debris"):AddItem(sound, 6); sound.Volume = 1.3; sound.SoundId = getcustomasset("Vanta/assets/notification.mp3"); sound:Play(); end, warn);')
                     
                         local args = {
                             slot
@@ -548,13 +548,11 @@ struct = automation_struct:construct({
                                                         description = string.format("Finished cycle in %.2fs, Gained %i echoes.", wiped_at - last_wiped_at, math.floor(v.Echoes or 0)),
                                                         color = 6724044,
                                                         author = {
-                                                            name = ".gg/project-rain",
-                                                            icon_url = "https://cdn.discordapp.com/attachments/1211502078200127529/1464075011550613588/PRLOGO.png"
+                                                            name = "vanta",
                                                         }
                                                     }
                                                 },
-                                                username = "Project Rain",
-                                                avatar_url = "https://cdn.discordapp.com/attachments/1211502078200127529/1464075011550613588/PRLOGO.png",
+                                                username = "Vanta",
                                                 attachments = {},
                                                 flags = 4096
                                             })

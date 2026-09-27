@@ -7,6 +7,7 @@ return {
             "Main",
             "Visuals",
             "Combat",
+            "Auto Parry",
             "Automation"
         };
  
@@ -41,10 +42,15 @@ end;
             "spotify_redirect_url",
             
         })
-        SaveManager:SetFolder('Project Rain/Deepwoken-Config')
-        ThemeManager:SetFolder('Project Rain/Deepwoken-Config')
+        SaveManager:SetFolder('Vanta/Deepwoken-Config')
+        ThemeManager:SetFolder('Vanta/Deepwoken-Config')
         SaveManager:BuildConfigSection(aztup.tabs.UI.Tab);
         ThemeManager:ApplyToTab(aztup.tabs.UI.Tab);
+
+        -- Vanta: edge glow + font picker (before autoload so saved values apply).
+        xpcall(function()
+            require("@src/ui/appearance").build(aztup.tabs.UI);
+        end, warn);
 
         task.spawn(pcall, require("@src/ui/config_converter"));
         task.spawn(xpcall, require("@src/ui/tabs/ui"), warn, aztup.tabs.UI);
@@ -66,7 +72,7 @@ end;
 		    if custom_name then
 		    	return string.format(LPH_ENCSTR("%s"), custom_name:gsub("|ACCENT", "<font color=\"#" .. Library.AccentColor:ToHex() .. "\">"))		    
 end
-		    return string.format(LPH_ENCSTR("pr <font color=\"#%s\">nextgen</font>"), Library.AccentColor:ToHex())
+		    return string.format(LPH_ENCSTR("<font color=\"#%s\">vanta</font>"), Library.AccentColor:ToHex())
 	    end)())
 
         aztup.auto_loaded = true;

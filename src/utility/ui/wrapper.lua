@@ -2,6 +2,7 @@ local custom_name = not LPH_OBFUSCATED and isfile("custom_name.txt") and readfil
 local Window = Library:CreateWindow({ 
 	Title = (string.format(LPH_ENCSTR("not loaded"), Library.AccentColor:ToHex())),
 	Center = true,
+	Size = UDim2.fromOffset(650, 500), -- Vanta: 4:3 (was the library default 550x550)
 	AutoShow = not aztup.silent_mode and not fflags:get("dont_auto_show_ui") and not aztup.automation:has_any(),
 	MenuFadeTime = 0,
 	TabPadding = 0
@@ -13,7 +14,7 @@ Library:AddToRegistry(Library.WindowLabel, {
 		if custom_name then
 			return string.format(LPH_ENCSTR("%s"), custom_name:gsub("|ACCENT", "<font color=\"#" .. Library.AccentColor:ToHex() .. "\">"))		
 end
-		return string.format(LPH_ENCSTR("pr <font color=\"#%s\">nextgen</font>"), Library.AccentColor:ToHex())
+		return string.format(LPH_ENCSTR("<font color=\"#%s\">vanta</font>"), Library.AccentColor:ToHex())
 	end
 })
 
