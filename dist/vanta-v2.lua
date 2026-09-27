@@ -85,7 +85,7 @@ end;
 -- needed for Auto Parry / farms / UI to work). Until then, this fetches the *raw* file
 -- straight from this repo on GitHub instead of decoding an embedded blob, so the
 -- writefile() calls in init.lua fail soft (pcall'd there) rather than crash.
-local ASSET_BASE_URL = "https://raw.githubusercontent.com/REPLACE_ME/vanta-v2/main/assets/";
+local ASSET_BASE_URL = "https://raw.githubusercontent.com/cranebat/vanta-v2/main/assets/";
 
 function inline_asset_b96(path)
     -- path looks like "@assets/lexend.ttf" - strip the alias, keep the relative path.
