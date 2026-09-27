@@ -12,13 +12,13 @@
       - Dropped `@src/security/user_service` - the "related security infra (server
         stuff) or logging" the brief said to leave out. `user_service` is stubbed to an
         empty table below so anything that references it as a bare global doesn't error.
-      - Every require for a feature area that hasn't been ported into vanta-v2 yet
-        (auto-builder, visuals/player_esp, visuals/base_esp, setup_auto_load) is wrapped
-        in pcall + warn instead of being a hard dependency, so the script still boots and
-        Auto Parry / farms / UI still work even though those are missing. As more of
-        Project Rain gets ported in, these start working with no further changes here.
+      - A few optional requires (auto-builder, visuals/player_esp, visuals/base_esp,
+        setup_auto_load) are wrapped in pcall + warn so one failing module can't stop
+        the whole script from booting.
+      - Assets it writes (fonts, sounds, the race-morph GUI) are embedded by
+        build/bundle.py, same as Rain's own bundler did.
       - Everything else (folder setup, the aztup table + detach-on-reload, TOS/config
-        picker, farms, Auto Parry, UI) is the same sequence as the stock init.lua.
+        picker, farms, feature loader, Auto Parry, UI) is the same sequence as stock.
 ]]
 
 if not game:IsLoaded() then
@@ -139,7 +139,6 @@ end;
 
 -- Same as stock init.lua: each inline_asset_b96(...) is replaced by build/bundle.py with
 -- base64(zstd(file)) at build time, decoded here and written once to the workspace.
--- (Stock also wrote DeepwokenMorphs/GuiItself.rbxm - left out, morphs aren't ported.)
 function decode_asset(asset)
     local decoded = services.EncodingService:Base64Decode(buffer.fromstring(asset));
     local decompressed = services.EncodingService:DecompressBuffer(decoded, Enum.CompressionAlgorithm.Zstd);
@@ -155,6 +154,9 @@ task.spawn(pcall, function()
     end;
     if not isfile("Project Rain/Assets/notification.mp3") then
         writefile("Project Rain/Assets/notification.mp3", decode_asset(inline_asset_b96("@assets/notification.mp3")));
+    end;
+    if not isfile("Project Rain/Deepwoken-Config/GuiItself.rbxm") then
+        writefile("Project Rain/Deepwoken-Config/GuiItself.rbxm", decode_asset(inline_asset_b96("@assets/DeepwokenMorphs/GuiItself.rbxm")));
     end;
 end);
 

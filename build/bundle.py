@@ -40,10 +40,13 @@ OUT_PATH = os.path.join(DIST_DIR, "vanta-v2.lua")
 
 GLOBALS_REL = "globals.lua"
 
-# list_modules() manifests (executors can't glob a GitHub repo at runtime).
-LIST_MODULES_PATTERNS = {
-    "automation/persistent_tasks/*": "automation/persistent_tasks",
-}
+
+# Assets referenced by the source that are NOT in the OSS release. Each call site is
+# replaced with a runtime error instead of failing the build - only safe where the
+# caller already pcall()s it. Anything missing that isn't listed here fails the build.
+#   brayden.png - features/qol/brayden.lua portrait (load_portrait() is pcall'd):
+#                 the minigame works, just without the picture.
+KNOWN_MISSING_ASSETS = {"brayden.png"}
 
 INLINE_ASSET_RE = re.compile(r'inline_asset_b96\(\s*"@assets/([^"]+)"\s*\)')
 
@@ -93,8 +96,16 @@ def encode_asset(rel):
     return encoded
 
 
+def _expand_one(m):
+    rel = m.group(1)
+    if rel in KNOWN_MISSING_ASSETS and not os.path.isfile(os.path.join(ASSETS_DIR, rel)):
+        print("  note: assets/%s isn't in the OSS release - that call errors at runtime (caller pcalls it)" % rel)
+        return '__vanta_missing_asset("%s")' % rel
+    return '"%s"' % encode_asset(rel)
+
+
 def expand_inline_assets(content):
-    return INLINE_ASSET_RE.sub(lambda m: '"%s"' % encode_asset(m.group(1)), content)
+    return INLINE_ASSET_RE.sub(_expand_one, content)
 
 
 # ---------------------------------------------------------------- bundle pieces
@@ -118,42 +129,63 @@ local modules = {};
 local loaded = {};
 local results = {};
 
+-- Rojo-style require: returns every value the module returns (ui/tabs/*.lua return
+-- `function, {name = ...}` and ui/ui.lua reads both), cached after the first call.
 local function require(path)
     if typeof(path) ~= "string" then
         return base_require(path);
     end;
 
     if loaded[path] then
-        return results[path];
+        local r = results[path];
+        return table.unpack(r, 1, r.n);
     end;
 
     local mod = modules[path];
     if not mod then
-        error("[vanta] module not found: " .. path .. " (not ported into vanta-v2 yet)", 2);
+        error("[vanta] module not found: " .. path .. " (not in this bundle)", 2);
     end;
 
     loaded[path] = true; -- set before running so a cyclic require returns nil, not recursion
-    local result = mod();
-    results[path] = result;
-    return result;
+    results[path] = { n = 0 };
+    local r = table.pack(mod());
+    results[path] = r;
+    return table.unpack(r, 1, r.n);
 end;
 
-local static_module_lists = {
-%(MODULE_LISTS)s};
+-- Every bundled .lua module, sorted. list_modules("dir/*") returns the modules directly
+-- inside src/dir, "dir/**" everything under it - generated from the real tree at build
+-- time, so there is no per-pattern manifest to keep in sync.
+local all_modules = {
+%(ALL_MODULES)s};
 
 function list_modules(pattern)
-    local list = static_module_lists[pattern];
-    if not list then
-        warn("[vanta] list_modules: no manifest for '" .. tostring(pattern) .. "' (add it in build/bundle.py)");
-        list = {};
+    local recursive = pattern:sub(-3) == "/**";
+    local dir = pattern:gsub("/%%*%%*?$", "");
+    local prefix = "@src/" .. dir .. "/";
+    local out = {};
+    for _, alias in all_modules do
+        if alias:sub(1, #prefix) == prefix then
+            local rest = alias:sub(#prefix + 1);
+            if recursive or not rest:find("/", 1, true) then
+                table.insert(out, alias);
+            end;
+        end;
     end;
-    return ipairs(list);
+    if #out == 0 then
+        warn("[vanta] list_modules: nothing matches '" .. tostring(pattern) .. "'");
+    end;
+    return ipairs(out);
 end;
 
 -- Every literal inline_asset_b96 call is replaced at build time. If this runs,
 -- something built the call dynamically, which the bundler can't embed.
 function inline_asset_b96(path)
     error("[vanta] inline_asset_b96 called at runtime for " .. tostring(path) .. " - must be a literal \\"@assets/...\\" string so build/bundle.py can embed it", 2);
+end;
+
+function __vanta_missing_asset(name)
+    error("[vanta] asset '" .. tostring(name) .. "' isn't part of the Project Rain OSS release", 2);
 end;
 
 -------------------------------------------------------------------------------
@@ -167,31 +199,40 @@ return (require("@src/init"));
 
 
 def alias_for(rel_path):
-    return "@src/" + rel_path[: -len(".lua")].replace(os.sep, "/")
+    stem = os.path.splitext(rel_path)[0]
+    return "@src/" + stem.replace(os.sep, "/")
 
 
-def collect_lua_files():
+def collect_modules():
+    """(alias, abs_path, kind) for every .lua and .json under src/ except globals.lua."""
     entries = []
     for root, _dirs, files in os.walk(SRC_DIR):
         for name in files:
-            if not name.endswith(".lua"):
+            ext = os.path.splitext(name)[1]
+            if ext not in (".lua", ".json"):
                 continue
             abs_path = os.path.join(root, name)
             rel_path = os.path.relpath(abs_path, SRC_DIR)
             if rel_path == GLOBALS_REL:
                 continue
-            entries.append((alias_for(rel_path), abs_path))
-    return sorted(entries)
+            entries.append((alias_for(rel_path), abs_path, ext[1:]))
+    entries.sort()
+    seen = {}
+    for alias, abs_path, _ in entries:
+        if alias in seen:
+            sys.exit("bundle.py: two files map to %s: %s and %s" % (alias, seen[alias], abs_path))
+        seen[alias] = abs_path
+    return entries
 
 
-def build_module_lists():
-    out = []
-    for pattern, rel_dir in LIST_MODULES_PATTERNS.items():
-        abs_dir = os.path.join(SRC_DIR, rel_dir)
-        names = sorted(n for n in os.listdir(abs_dir) if n.endswith(".lua")) if os.path.isdir(abs_dir) else []
-        items = "\n".join('        "%s",' % alias_for(os.path.join(rel_dir, n)) for n in names)
-        out.append('    ["%s"] = {\n%s\n    },\n' % (pattern, items))
-    return "".join(out)
+def lua_long_string(text):
+    """Wrap text in a Lua long bracket whose level doesn't occur in the text."""
+    level = 0
+    while ("]" + "=" * level + "]") in text:
+        level += 1
+    eq = "=" * level
+    # a leading newline right after the opening bracket is dropped by Lua, so add one
+    return "[" + eq + "[\n" + text + "]" + eq + "]"
 
 
 def read_src(path):
@@ -205,17 +246,23 @@ def read_src(path):
 
 def main():
     os.makedirs(DIST_DIR, exist_ok=True)
-    parts = [PREAMBLE % {"MODULE_LISTS": build_module_lists()}]
+    entries = collect_modules()
+    lua_aliases = [a for a, _, kind in entries if kind == "lua"]
+    all_modules = "".join('    "%s",\n' % a for a in lua_aliases)
 
-    globals_src = read_src(os.path.join(SRC_DIR, GLOBALS_REL))
+    parts = [PREAMBLE % {"ALL_MODULES": all_modules}]
     parts.append("do end;\n")  # statement boundary before inlined code
-    parts.append(globals_src)
+    parts.append(read_src(os.path.join(SRC_DIR, GLOBALS_REL)))
     parts.append("\n")
 
-    entries = collect_lua_files()
-    for alias, abs_path in entries:
+    for alias, abs_path, kind in entries:
         parts.append('modules["%s"] = function()\n' % alias)
-        parts.append(read_src(abs_path))
+        if kind == "lua":
+            parts.append(read_src(abs_path))
+        else:
+            with open(abs_path, "r", encoding="utf-8") as f:
+                text = f.read()
+            parts.append('return game:GetService("HttpService"):JSONDecode(%s);\n' % lua_long_string(text))
         parts.append("end;\n\n")
 
     parts.append(FOOTER)
@@ -228,10 +275,9 @@ def main():
     with open(OUT_PATH, "w", encoding="utf-8", newline="\n") as f:
         f.write(bundle)
 
-    print("Bundled %d modules + inlined globals.lua, embedded %d assets -> %s (%d bytes)" % (
-        len(entries), len(_ASSET_CACHE), OUT_PATH, len(bundle.encode("utf-8"))))
-    for rel in sorted(_ASSET_CACHE):
-        print("  asset: %s" % rel)
+    n_json = sum(1 for _, _, k in entries if k == "json")
+    print("Bundled %d lua + %d json modules + inlined globals.lua, embedded %d assets -> %s (%d bytes)" % (
+        len(lua_aliases), n_json, len(_ASSET_CACHE), OUT_PATH, len(bundle.encode("utf-8"))))
 
 
 if __name__ == "__main__":
