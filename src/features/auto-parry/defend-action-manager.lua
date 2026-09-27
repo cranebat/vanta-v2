@@ -70,6 +70,18 @@ end
         });
 
         self.on_update:fire();
+
+        -- Vanta: if it's due now, handle it this frame instead of waiting for the
+        -- next Heartbeat (that added 0-1 frame of random delay to every parry/dodge).
+        -- Deferred rather than called inline so update() is never re-entered while
+        -- it's walking the queue.
+        if when <= tick() and sent_actions < 75 and self.update then
+            task.defer(function()
+                if sent_actions < 75 then
+                    self:update();
+                end;
+            end);
+        end;
     end;
 
     function DefendActionManager:wrap_add_action(type)
@@ -405,8 +417,21 @@ end;
             self._dodge_until = self._dodge_until or 0
             self._block_started_at = self._block_started_at or 0
 
-            if #self.actions_to_play_through > 5 then
-                table.clear(self.actions_to_play_through);
+            -- Vanta: used to wipe the WHOLE queue once it held more than 5 entries,
+            -- which dropped real parries when several enemies attacked at once. Now
+            -- only entries more than 1s overdue are dropped, plus a hard cap.
+            do
+                local now = tick();
+                local queue = self.actions_to_play_through;
+                for i = #queue, 1, -1 do
+                    local v = queue[i];
+                    if v.when < now - 1 and not self.currently_handling[v] then
+                        table.remove(queue, i);
+                    end;
+                end;
+                while #queue > 40 do
+                    table.remove(queue, 1);
+                end;
             end
 
             -- Vanta: Block Overrides Auto Parry. While you're holding block yourself,

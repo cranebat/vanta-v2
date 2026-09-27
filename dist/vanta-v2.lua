@@ -20552,6 +20552,18 @@ end
         });
 
         self.on_update:fire();
+
+        -- Vanta: if it's due now, handle it this frame instead of waiting for the
+        -- next Heartbeat (that added 0-1 frame of random delay to every parry/dodge).
+        -- Deferred rather than called inline so update() is never re-entered while
+        -- it's walking the queue.
+        if when <= tick() and sent_actions < 75 and self.update then
+            task.defer(function()
+                if sent_actions < 75 then
+                    self:update();
+                end;
+            end);
+        end;
     end;
 
     function DefendActionManager:wrap_add_action(type)
@@ -20887,8 +20899,21 @@ end;
             self._dodge_until = self._dodge_until or 0
             self._block_started_at = self._block_started_at or 0
 
-            if #self.actions_to_play_through > 5 then
-                table.clear(self.actions_to_play_through);
+            -- Vanta: used to wipe the WHOLE queue once it held more than 5 entries,
+            -- which dropped real parries when several enemies attacked at once. Now
+            -- only entries more than 1s overdue are dropped, plus a hard cap.
+            do
+                local now = tick();
+                local queue = self.actions_to_play_through;
+                for i = #queue, 1, -1 do
+                    local v = queue[i];
+                    if v.when < now - 1 and not self.currently_handling[v] then
+                        table.remove(queue, i);
+                    end;
+                end;
+                while #queue > 40 do
+                    table.remove(queue, 1);
+                end;
             end
 
             -- Vanta: Block Overrides Auto Parry. While you're holding block yourself,
@@ -22307,6 +22332,12 @@ end
     local function process_actions(self, track, data, pot_name, to_evaluate_actions, action_type, blocked_bi, blocked_af)
         local current_rtt = Latency:get_ping()
         local alotted = 0
+        -- Vanta: timings are measured against real elapsed time from here, not the
+        -- sum of requested waits (task.wait always overshoots a little, so multi-hit
+        -- moves used to drift later with every hit). Intentional pauses (End Block,
+        -- delay-until-in-hitbox, RPUE loops) shift timing_start so they keep their
+        -- old meaning.
+        local timing_start = tick()
         local forced_roll_next
 
         local track_state = self.running_tracks[track];
@@ -22344,7 +22375,7 @@ end;
             local offset = action.offset or CFrame.new();
             local type = action.type or "Parry";
             local ignore_anim_early_end = action.ignore_animation_early_end or data.ignore_animation_early_end;
-            local time = action.when or 0;
+            local time = (action.when or 0) + ((aztup.flags.global_timing_offset or 0) / 1000);
             local name = action.name or data.name or pot_name or "Unidentified " .. track.Animation.AnimationId;
 
             if data.ignore_hitbox_check or data.ignore_hitbox or action.ignore_hitbox_check then
@@ -22356,8 +22387,11 @@ end;
             end;
             
             if type == "End Block" and self.blocked then
+                alotted = tick() - timing_start;
                 local wait_time = (time - alotted) - current_rtt
+                local paused_at = tick();
                 task.wait(wait_time);
+                timing_start += tick() - paused_at;
                 DefendActionManager:add_action(self.entity, "unblock", tick());
                 self.blocked = false;
                 continue            
@@ -22401,11 +22435,14 @@ end;
             
 
             if action.delay_until_in_hitbox then
+                local paused_at = tick();
                 repeat
                     task.wait();
                 until in_hitbox(true) or not action.ignore_early_end and not track_still_active(track, self.entity) and not ignore_anim_early_end;
+                timing_start += tick() - paused_at;
             end;
 
+            alotted = tick() - timing_start;
             local start = tick();
             local input_task = create_block_input_task(self, track, action, data, action_type, name, time, alotted, ignore_anim_early_end, blocked_bi, start, in_hitbox);
             self:track_cleanup(track, function()
@@ -22441,6 +22478,7 @@ end;
                 continue            
 end;
 
+            alotted = tick() - timing_start;
             local wait_time = (time - alotted) - current_rtt
 
             -- Vanta: Reactions. Block / Misstime need to act *before* the hit, so
@@ -22532,7 +22570,6 @@ end;
                     end);
 
                 task.wait(wait_time)
-                alotted += wait_time
             elseif wait_time ~= wait_time or wait_time > 0 then
                 return debug_print("[%s] Skipping action %i, wait time invalid: %.2f", name, index, wait_time)            
 end;
@@ -22558,6 +22595,7 @@ end
 end
 
             if type == "RPUE Parry" then
+                local paused_at = tick();
                 local blocked = false;
                 while action.condition() do
                     if action.should() then
@@ -22574,6 +22612,7 @@ end
                     task.wait();
                     DefendActionManager.unblock:FireServer();
                 end;
+                timing_start += tick() - paused_at;
                 continue            
 end;
 
@@ -22913,7 +22952,15 @@ end
             
             
             
-            to_evaluate_actions = actions:get()
+            -- Vanta: actions pushed with action:play() were already handled through the
+            -- signal above; actions:get() still contains them, which used to process
+            -- them a second time (two parries for one hit). Skip those here.
+            to_evaluate_actions = {};
+            for _, a in actions:get() do
+                if not table.find(signal_actions, a) then
+                    table.insert(to_evaluate_actions, a);
+                end;
+            end;
             if #to_evaluate_actions > 0 then
                 local action_type = data.action_type or "Undefined"
                 local blocked_bi = aztup_options.blocked_safe_input_moves.Value[action_type]
@@ -44825,6 +44872,11 @@ return function(tab)
     ------------------------------------------------------------------ Advanced
     advanced:newLabel("Fine tuning. The defaults are fine for most people.", true);
 
+    advanced:newSlider("global_timing_offset", "Global Timing Offset", 0, -100, 100, 0, true, "ms", nil,
+        "Shift EVERY parry/dodge earlier (-) or later (+). Use if Auto Parry is consistently a little early or late for you.");
+    advanced:newToggle("ping_smoothing", "Ping Smoothing", true,
+        "Uses your median ping over the last ~2s instead of the raw value, so one lag spike doesn't make a parry fire early.");
+
     advanced:newSlider("apc_timing_offset", "M1 Timing Offset", 0, -150, 150, 0, true, "ms", nil,
         "Shift parries on player weapon M1s earlier (-) or later (+).");
     advanced:newSlider("unparriable_dodge_offset", "Unparriable Move Latency", 0, -200, 200, 0, true, "ms", nil,
@@ -49187,13 +49239,13 @@ local latency = {};
 local ping = services.Stats:FindFirstChild("Data Ping", true);
 local notified = false;
 
-function latency:get_ping()
+local function raw_ping()
     if not ping then
         if not notified then
             notified = true;
             Logger:short_notify("Cant find ping stat, Ignore this if kicked.");
         end
-        return 0    
+        return 0
 end
 
     local val;
@@ -49202,6 +49254,62 @@ end
     val = ping:GetValue();
     setthreadidentity(old);
     return val / 1000
+end
+
+--[[
+    Vanta: Ping Smoothing (Auto Parry -> Advanced, on by default).
+    Every timing subtracts ping, so a single spike used to make that parry fire early.
+    Now the median of the last ~2s of samples is used: one-off spikes are ignored,
+    real ping changes still come through within a second or two.
+]]
+local SAMPLE_EVERY = 0.25;
+local MAX_SAMPLES = 8;
+local samples = {};
+
+local function add_sample()
+    table.insert(samples, raw_ping());
+    if #samples > MAX_SAMPLES then
+        table.remove(samples, 1);
+    end;
+end
+
+-- Sampled in the background so the window is always the last ~2s, even after
+-- standing around idle.
+-- One sampler per load: re-executing the script replaces the token and the old
+-- loop stops.
+local session = {};
+getgenv().vanta_latency_session = session;
+task.spawn(function()
+    while task.wait(SAMPLE_EVERY) do
+        if getgenv().vanta_latency_session ~= session then break end;
+        pcall(add_sample);
+    end;
+end);
+
+local function smoothed_ping()
+    if #samples == 0 then
+        pcall(add_sample);
+        if #samples == 0 then return 0 end;
+    end;
+
+    local sorted = table.clone(samples);
+    table.sort(sorted);
+    local n = #sorted;
+    if n % 2 == 1 then
+        return sorted[(n + 1) / 2]
+    end;
+    return (sorted[n / 2] + sorted[n / 2 + 1]) / 2
+end
+
+function latency:get_ping()
+    if aztup and aztup.flags and aztup.flags.ping_smoothing == false then
+        return raw_ping()
+    end;
+    return smoothed_ping()
+end;
+
+function latency:get_raw_ping()
+    return raw_ping()
 end;
 
 function latency:half_ping()

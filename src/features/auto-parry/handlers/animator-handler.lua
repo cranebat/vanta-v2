@@ -1040,6 +1040,12 @@ end
     local function process_actions(self, track, data, pot_name, to_evaluate_actions, action_type, blocked_bi, blocked_af)
         local current_rtt = Latency:get_ping()
         local alotted = 0
+        -- Vanta: timings are measured against real elapsed time from here, not the
+        -- sum of requested waits (task.wait always overshoots a little, so multi-hit
+        -- moves used to drift later with every hit). Intentional pauses (End Block,
+        -- delay-until-in-hitbox, RPUE loops) shift timing_start so they keep their
+        -- old meaning.
+        local timing_start = tick()
         local forced_roll_next
 
         local track_state = self.running_tracks[track];
@@ -1077,7 +1083,7 @@ end;
             local offset = action.offset or CFrame.new();
             local type = action.type or "Parry";
             local ignore_anim_early_end = action.ignore_animation_early_end or data.ignore_animation_early_end;
-            local time = action.when or 0;
+            local time = (action.when or 0) + ((aztup.flags.global_timing_offset or 0) / 1000);
             local name = action.name or data.name or pot_name or "Unidentified " .. track.Animation.AnimationId;
 
             if data.ignore_hitbox_check or data.ignore_hitbox or action.ignore_hitbox_check then
@@ -1089,8 +1095,11 @@ end;
             end;
             
             if type == "End Block" and self.blocked then
+                alotted = tick() - timing_start;
                 local wait_time = (time - alotted) - current_rtt
+                local paused_at = tick();
                 task.wait(wait_time);
+                timing_start += tick() - paused_at;
                 DefendActionManager:add_action(self.entity, "unblock", tick());
                 self.blocked = false;
                 continue            
@@ -1134,11 +1143,14 @@ end;
             
 
             if action.delay_until_in_hitbox then
+                local paused_at = tick();
                 repeat
                     task.wait();
                 until in_hitbox(true) or not action.ignore_early_end and not track_still_active(track, self.entity) and not ignore_anim_early_end;
+                timing_start += tick() - paused_at;
             end;
 
+            alotted = tick() - timing_start;
             local start = tick();
             local input_task = create_block_input_task(self, track, action, data, action_type, name, time, alotted, ignore_anim_early_end, blocked_bi, start, in_hitbox);
             self:track_cleanup(track, function()
@@ -1174,6 +1186,7 @@ end;
                 continue            
 end;
 
+            alotted = tick() - timing_start;
             local wait_time = (time - alotted) - current_rtt
 
             -- Vanta: Reactions. Block / Misstime need to act *before* the hit, so
@@ -1265,7 +1278,6 @@ end;
                     end);
 
                 task.wait(wait_time)
-                alotted += wait_time
             elseif wait_time ~= wait_time or wait_time > 0 then
                 return debug_print("[%s] Skipping action %i, wait time invalid: %.2f", name, index, wait_time)            
 end;
@@ -1291,6 +1303,7 @@ end
 end
 
             if type == "RPUE Parry" then
+                local paused_at = tick();
                 local blocked = false;
                 while action.condition() do
                     if action.should() then
@@ -1307,6 +1320,7 @@ end
                     task.wait();
                     DefendActionManager.unblock:FireServer();
                 end;
+                timing_start += tick() - paused_at;
                 continue            
 end;
 
@@ -1646,7 +1660,15 @@ end
             
             
             
-            to_evaluate_actions = actions:get()
+            -- Vanta: actions pushed with action:play() were already handled through the
+            -- signal above; actions:get() still contains them, which used to process
+            -- them a second time (two parries for one hit). Skip those here.
+            to_evaluate_actions = {};
+            for _, a in actions:get() do
+                if not table.find(signal_actions, a) then
+                    table.insert(to_evaluate_actions, a);
+                end;
+            end;
             if #to_evaluate_actions > 0 then
                 local action_type = data.action_type or "Undefined"
                 local blocked_bi = aztup_options.blocked_safe_input_moves.Value[action_type]
