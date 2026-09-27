@@ -205,6 +205,39 @@ function Appearance.build(ui_tab)
             apply_font(value);
         end);
 
+    -- Start Hidden: menu, watermark and keybind list stay hidden after executing
+    -- until the menu is opened for the first time. Saved outside configs
+    -- (fflag "dont_auto_show_ui", read when the window is created).
+    box:newToggle("start_hidden", "Start Hidden", fflags:get("dont_auto_show_ui") == true,
+        "When you execute, nothing shows (no menu, watermark, keybind list or 'config loaded' popup) until you press your menu key. Takes effect next execute.",
+        function(on)
+            fflags:set("dont_auto_show_ui", on == true);
+        end);
+
+    if fflags:get("dont_auto_show_ui") and not Library.Toggled then
+        local hide_conn;
+        hide_conn = services.RunService.Heartbeat:Connect(function()
+            if Library.Toggled or Library.Unloaded then
+                hide_conn:Disconnect();
+                -- First time the menu opens: bring back whatever the user has on.
+                if aztup_toggles.Watermark then
+                    Library:SetWatermarkVisibility(aztup_toggles.Watermark.Value);
+                end;
+                if Library.KeybindFrame and aztup_toggles.KeybindShower then
+                    Library.KeybindFrame.Visible = aztup_toggles.KeybindShower.Value;
+                end;
+                return;
+            end;
+            if Library.Watermark and Library.Watermark.Visible then
+                Library.Watermark.Visible = false;
+            end;
+            if Library.KeybindFrame and Library.KeybindFrame.Visible then
+                Library.KeybindFrame.Visible = false;
+            end;
+        end);
+        Library:GiveSignal(hide_conn);
+    end;
+
     create_glow(Library.PRWindow.Holder);
 
     if saved_font ~= "Lexend" then

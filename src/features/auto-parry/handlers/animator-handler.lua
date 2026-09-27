@@ -90,7 +90,7 @@ track_still_active = LPH_JIT_MAX(function(track: AnimationTrack, entity)
         return true    
 end;
 
-    return track.IsPlaying or anti_ap_breaker:is_fully_dead(track, entity) == false
+    return track.IsPlaying or anti_ap_breaker:is_fully_dead(track, entity) == false or anti_ap_breaker:still_expected(track)
 end)
 
 return LPH_NO_VIRTUALIZE(function()
@@ -839,6 +839,64 @@ end
         return nil    
 end
 
+    --[[
+        Vanta Flash AP breaker (Main tab -> AP Breaker -> type "Vanta Flash").
+        For the first ~100ms of each of our attack animations, the track is made to
+        look fake to the stock Anti AP Breaker: Core priority (fails "Core Priority")
+        and/or a very high speed (fails "S >= X" / "Length <= Xms"). Those checks only
+        look once, right when the animation starts, so the enemy's Auto Parry drops
+        the attack. Afterwards everything is restored (speed, priority, and the
+        animation's position) so it looks and plays normally. The attack itself is
+        server-side and isn't affected. Vanta's own Anti AP Breaker has Flash Immunity.
+    ]]
+    local flashed_tracks = setmetatable({}, { __mode = "k" });
+    local function flash_break(track)
+        if not (aztup.flags.ap_breaker and aztup_options.ap_breaker_type and aztup_options.ap_breaker_type.Value == "Vanta Flash") then
+            return
+        end;
+        if track.Looped or track:HasTag("PR_BREAKER_IGNORE") then
+            return
+        end;
+
+        local mode = aztup_options.vanta_flash_mode and aztup_options.vanta_flash_mode.Value or "Priority";
+        local duration = (aztup.flags.vanta_flash_ms or 100) / 1000;
+        local original_priority = track.Priority;
+        local original_speed = track.Speed;
+        local started = tick();
+
+        local use_priority = mode ~= "Speed";
+        local use_speed = mode ~= "Priority" and original_speed > 0;
+        flashed_tracks[track] = true;
+
+        local factor = use_speed and (math.max(original_speed * 6, 6) / original_speed) or 1;
+
+        pcall(function()
+            if use_priority then
+                track.Priority = Enum.AnimationPriority.Core;
+            end;
+            if use_speed then
+                track:AdjustSpeed(original_speed * factor);
+            end;
+        end);
+
+        task.delay(duration, function()
+            pcall(function()
+                if use_speed and track.IsPlaying then
+                    -- Divide our boost back out instead of resetting to the original
+                    -- speed, so anything else that changed the speed meanwhile (e.g.
+                    -- Anim Speed Changer) is kept.
+                    local restored = track.Speed / factor;
+                    track:AdjustSpeed(restored);
+                    -- Put the animation back where it would be at that speed.
+                    track.TimePosition = math.min((tick() - started) * restored, math.max(track.Length - 0.01, 0));
+                end;
+                if use_priority then
+                    track.Priority = original_priority;
+                end;
+            end);
+        end);
+    end
+
     -- Vanta: Reactions (Auto Parry tab -> Reactions). Decides, per parry, whether to
     -- parry normally or: hold block through the hit, roll instead, or fake a mistimed
     -- parry (tap block early, then roll when the hit actually lands).
@@ -1039,13 +1097,8 @@ end
     
     local function process_actions(self, track, data, pot_name, to_evaluate_actions, action_type, blocked_bi, blocked_af)
         local current_rtt = Latency:get_ping()
-        local alotted = 0
-        -- Vanta: timings are measured against real elapsed time from here, not the
-        -- sum of requested waits (task.wait always overshoots a little, so multi-hit
-        -- moves used to drift later with every hit). Intentional pauses (End Block,
-        -- delay-until-in-hitbox, RPUE loops) shift timing_start so they keep their
-        -- old meaning.
-        local timing_start = tick()
+        -- Vanta: time already spent waiting out a flash breaker (0 normally).
+        local alotted = (self.running_tracks[track] and self.running_tracks[track].pre_delay) or 0
         local forced_roll_next
 
         local track_state = self.running_tracks[track];
@@ -1083,7 +1136,7 @@ end;
             local offset = action.offset or CFrame.new();
             local type = action.type or "Parry";
             local ignore_anim_early_end = action.ignore_animation_early_end or data.ignore_animation_early_end;
-            local time = (action.when or 0) + ((aztup.flags.global_timing_offset or 0) / 1000);
+            local time = action.when or 0;
             local name = action.name or data.name or pot_name or "Unidentified " .. track.Animation.AnimationId;
 
             if data.ignore_hitbox_check or data.ignore_hitbox or action.ignore_hitbox_check then
@@ -1095,11 +1148,8 @@ end;
             end;
             
             if type == "End Block" and self.blocked then
-                alotted = tick() - timing_start;
                 local wait_time = (time - alotted) - current_rtt
-                local paused_at = tick();
                 task.wait(wait_time);
-                timing_start += tick() - paused_at;
                 DefendActionManager:add_action(self.entity, "unblock", tick());
                 self.blocked = false;
                 continue            
@@ -1143,14 +1193,11 @@ end;
             
 
             if action.delay_until_in_hitbox then
-                local paused_at = tick();
                 repeat
                     task.wait();
                 until in_hitbox(true) or not action.ignore_early_end and not track_still_active(track, self.entity) and not ignore_anim_early_end;
-                timing_start += tick() - paused_at;
             end;
 
-            alotted = tick() - timing_start;
             local start = tick();
             local input_task = create_block_input_task(self, track, action, data, action_type, name, time, alotted, ignore_anim_early_end, blocked_bi, start, in_hitbox);
             self:track_cleanup(track, function()
@@ -1186,7 +1233,6 @@ end;
                 continue            
 end;
 
-            alotted = tick() - timing_start;
             local wait_time = (time - alotted) - current_rtt
 
             -- Vanta: Reactions. Block / Misstime need to act *before* the hit, so
@@ -1278,6 +1324,7 @@ end;
                     end);
 
                 task.wait(wait_time)
+                alotted += wait_time
             elseif wait_time ~= wait_time or wait_time > 0 then
                 return debug_print("[%s] Skipping action %i, wait time invalid: %.2f", name, index, wait_time)            
 end;
@@ -1303,7 +1350,6 @@ end
 end
 
             if type == "RPUE Parry" then
-                local paused_at = tick();
                 local blocked = false;
                 while action.condition() do
                     if action.should() then
@@ -1320,7 +1366,6 @@ end
                     task.wait();
                     DefendActionManager.unblock:FireServer();
                 end;
-                timing_start += tick() - paused_at;
                 continue            
 end;
 
@@ -1444,6 +1489,7 @@ end;
     
     
     
+    local movement_anim_ids;
     local function log_info_if_enabled(self, track)
         if not (aztup.flags.info_logger and self.entity:FindFirstChild("HumanoidRootPart") and self.entity.Name ~= local_player.character.Name) then
             return        
@@ -1459,16 +1505,20 @@ end
             if name:lower():match("parried") then return end
             if name:lower():match("idle") then return end
 
-            local disallowed = false;
-            local assets = game:GetService("ReplicatedStorage"):FindFirstChild("Assets");
-            for _, anim in assets.Anims.Movement:GetDescendants() do
-                if anim:IsA("Animation") and anim.AnimationId == track.Animation.AnimationId then
-                    disallowed = true;
-                    break                
-end;
-            end
+            -- Vanta: the set of movement animations is built once instead of
+            -- scanning the whole Movement folder for every logged animation.
+            if not movement_anim_ids then
+                local ids = {};
+                local assets = game:GetService("ReplicatedStorage"):FindFirstChild("Assets");
+                for _, anim in assets.Anims.Movement:GetDescendants() do
+                    if anim:IsA("Animation") then
+                        ids[anim.AnimationId] = true;
+                    end;
+                end;
+                movement_anim_ids = ids; -- only cached once fully built
+            end;
 
-            if disallowed then return end
+            if movement_anim_ids[track.Animation.AnimationId] then return end
 
             Library:AddTextToInfoLogger(string.format("%s %s %s", name, tostring(track.Animation.AnimationId:match("%d+")), self.entity.Name), tostring(track.Animation.AnimationId:match("%d+")), function()
                 if getgenv().timing_builder then getgenv().timing_builder:load_track(track, self.entity); end;
@@ -1520,12 +1570,22 @@ end;
 
         log_info_if_enabled(self, track);
 
+        -- Vanta: "Vanta Flash" AP breaker - applied in the same frame the animation
+        -- starts (before any wait) so the flash replicates with the Play itself.
+        if data and self.entity.Name == local_player.character.Name then
+            flash_break(track);
+        end;
+
         if not data or tasks >= (aztup.flags.task_concurrency or 25) then
             return        
 end;
 
         task.wait(1 / 60); 
-        if anti_ap_breaker:initial_check(self, track) then 
+        -- Vanta: Flash Immunity - waits out a flash breaker (0 for normal anims).
+        local is_own = self.entity.Name == local_player.character.Name;
+        local settle_delay = (not is_own) and anti_ap_breaker:settle(self, track) or 0;
+        -- Our own flashed attacks would fail the start checks by design; skip them.
+        if not (is_own and flashed_tracks[track]) and anti_ap_breaker:initial_check(self, track) then 
             tasks = math.max(0, tasks - 1);
             return 
         end
@@ -1600,7 +1660,7 @@ end;
 end
         end
 
-        self.running_tracks[track] = { thread = coroutine.running(), feint_threads = {}, cleanups = {} };
+        self.running_tracks[track] = { thread = coroutine.running(), feint_threads = {}, cleanups = {}, pre_delay = settle_delay };
 
         local actions = action_builder.new({ signal = true })
         local to_evaluate_actions
@@ -1660,15 +1720,7 @@ end
             
             
             
-            -- Vanta: actions pushed with action:play() were already handled through the
-            -- signal above; actions:get() still contains them, which used to process
-            -- them a second time (two parries for one hit). Skip those here.
-            to_evaluate_actions = {};
-            for _, a in actions:get() do
-                if not table.find(signal_actions, a) then
-                    table.insert(to_evaluate_actions, a);
-                end;
-            end;
+            to_evaluate_actions = actions:get()
             if #to_evaluate_actions > 0 then
                 local action_type = data.action_type or "Undefined"
                 local blocked_bi = aztup_options.blocked_safe_input_moves.Value[action_type]

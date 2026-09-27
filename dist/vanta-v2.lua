@@ -13990,6 +13990,31 @@ end
 
 --------------------------------------------------------------------------- build
 
+local class_cache = {};
+
+-- Returns { kind = "mantra", name } | { kind = "skip", reason } | { kind = "attack" },
+-- plus .eruption = true if the name mentions an eruption.
+local function classify(track, path)
+    local joined, tokens = describe(track, path);
+    local eruption = joined:find("eruption", 1, true) ~= nil;
+
+    local mantra = identify_mantra(joined);
+    if mantra then
+        return { kind = "mantra", name = mantra, eruption = eruption };
+    end;
+
+    for _, token in tokens do
+        for _, word in NON_ATTACK_WORDS do
+            if token:sub(1, #word) == word then
+                return { kind = "skip", reason = "not an attack (" .. token .. ")", eruption = eruption };
+            end;
+        end;
+    end;
+
+    return { kind = "attack", eruption = eruption };
+end
+
+
 -- entity: attacker. track: the AnimationTrack. path: "Folder/Sub/AnimName" under
 -- ReplicatedStorage.Assets.Anims if the id is known there (else nil).
 -- Returns (data, reason): data is a PR timing table or nil; reason is for debug.
@@ -13998,10 +14023,19 @@ function apc_fallback.build(entity, track, path)
         return nil, "APC fallback off";
     end;
 
-    local joined, tokens = describe(track, path);
+    -- What kind of animation this is depends only on the animation itself, so it's
+    -- worked out once per animation and cached (this used to run ~700 string
+    -- searches for every untimed animation anyone played - walking, idling, ...).
+    local anim = track and track.Animation;
+    local key = (anim and anim.AnimationId or "?") .. "|" .. (path or "") .. "|" .. (anim and anim.Parent and anim.Parent.Name or "");
+    local class = class_cache[key];
+    if not class then
+        class = classify(track, path);
+        class_cache[key] = class;
+    end;
 
-    local mantra = identify_mantra(joined);
-    if mantra then
+    if class.kind == "mantra" then
+        local mantra = class.name;
         local rule = UNPARRIABLE[mantra];
         if rule then
             return dodge_data(mantra, rule.when, rule.size);
@@ -14015,8 +14049,8 @@ function apc_fallback.build(entity, track, path)
     end;
 
     -- Generic "eruption" anim with no element in its name: if the caster's only
-    -- eruption mantra is Ice Eruption, it's that.
-    if joined:find("eruption", 1, true) then
+    -- eruption mantra is Ice Eruption, it's that. (Depends on the caster, so not cached.)
+    if class.eruption then
         local player = game:GetService("Players"):GetPlayerFromCharacter(entity);
         local backpack = player and player:FindFirstChild("Backpack");
         if backpack and backpack:FindFirstChild("Mantra:EruptionIce{{Ice Eruption}}") then
@@ -14033,12 +14067,8 @@ function apc_fallback.build(entity, track, path)
         end;
     end;
 
-    for _, token in tokens do
-        for _, word in NON_ATTACK_WORDS do
-            if token:sub(1, #word) == word then
-                return nil, "not an attack (" .. token .. ")";
-            end;
-        end;
+    if class.kind == "skip" then
+        return nil, class.reason;
     end;
 
     local w = weapon.data(entity);
@@ -20552,18 +20582,6 @@ end
         });
 
         self.on_update:fire();
-
-        -- Vanta: if it's due now, handle it this frame instead of waiting for the
-        -- next Heartbeat (that added 0-1 frame of random delay to every parry/dodge).
-        -- Deferred rather than called inline so update() is never re-entered while
-        -- it's walking the queue.
-        if when <= tick() and sent_actions < 75 and self.update then
-            task.defer(function()
-                if sent_actions < 75 then
-                    self:update();
-                end;
-            end);
-        end;
     end;
 
     function DefendActionManager:wrap_add_action(type)
@@ -20899,21 +20917,8 @@ end;
             self._dodge_until = self._dodge_until or 0
             self._block_started_at = self._block_started_at or 0
 
-            -- Vanta: used to wipe the WHOLE queue once it held more than 5 entries,
-            -- which dropped real parries when several enemies attacked at once. Now
-            -- only entries more than 1s overdue are dropped, plus a hard cap.
-            do
-                local now = tick();
-                local queue = self.actions_to_play_through;
-                for i = #queue, 1, -1 do
-                    local v = queue[i];
-                    if v.when < now - 1 and not self.currently_handling[v] then
-                        table.remove(queue, i);
-                    end;
-                end;
-                while #queue > 40 do
-                    table.remove(queue, 1);
-                end;
+            if #self.actions_to_play_through > 5 then
+                table.clear(self.actions_to_play_through);
             end
 
             -- Vanta: Block Overrides Auto Parry. While you're holding block yourself,
@@ -21382,7 +21387,7 @@ track_still_active = LPH_JIT_MAX(function(track: AnimationTrack, entity)
         return true    
 end;
 
-    return track.IsPlaying or anti_ap_breaker:is_fully_dead(track, entity) == false
+    return track.IsPlaying or anti_ap_breaker:is_fully_dead(track, entity) == false or anti_ap_breaker:still_expected(track)
 end)
 
 return LPH_NO_VIRTUALIZE(function()
@@ -22131,6 +22136,64 @@ end
         return nil    
 end
 
+    --[[
+        Vanta Flash AP breaker (Main tab -> AP Breaker -> type "Vanta Flash").
+        For the first ~100ms of each of our attack animations, the track is made to
+        look fake to the stock Anti AP Breaker: Core priority (fails "Core Priority")
+        and/or a very high speed (fails "S >= X" / "Length <= Xms"). Those checks only
+        look once, right when the animation starts, so the enemy's Auto Parry drops
+        the attack. Afterwards everything is restored (speed, priority, and the
+        animation's position) so it looks and plays normally. The attack itself is
+        server-side and isn't affected. Vanta's own Anti AP Breaker has Flash Immunity.
+    ]]
+    local flashed_tracks = setmetatable({}, { __mode = "k" });
+    local function flash_break(track)
+        if not (aztup.flags.ap_breaker and aztup_options.ap_breaker_type and aztup_options.ap_breaker_type.Value == "Vanta Flash") then
+            return
+        end;
+        if track.Looped or track:HasTag("PR_BREAKER_IGNORE") then
+            return
+        end;
+
+        local mode = aztup_options.vanta_flash_mode and aztup_options.vanta_flash_mode.Value or "Priority";
+        local duration = (aztup.flags.vanta_flash_ms or 100) / 1000;
+        local original_priority = track.Priority;
+        local original_speed = track.Speed;
+        local started = tick();
+
+        local use_priority = mode ~= "Speed";
+        local use_speed = mode ~= "Priority" and original_speed > 0;
+        flashed_tracks[track] = true;
+
+        local factor = use_speed and (math.max(original_speed * 6, 6) / original_speed) or 1;
+
+        pcall(function()
+            if use_priority then
+                track.Priority = Enum.AnimationPriority.Core;
+            end;
+            if use_speed then
+                track:AdjustSpeed(original_speed * factor);
+            end;
+        end);
+
+        task.delay(duration, function()
+            pcall(function()
+                if use_speed and track.IsPlaying then
+                    -- Divide our boost back out instead of resetting to the original
+                    -- speed, so anything else that changed the speed meanwhile (e.g.
+                    -- Anim Speed Changer) is kept.
+                    local restored = track.Speed / factor;
+                    track:AdjustSpeed(restored);
+                    -- Put the animation back where it would be at that speed.
+                    track.TimePosition = math.min((tick() - started) * restored, math.max(track.Length - 0.01, 0));
+                end;
+                if use_priority then
+                    track.Priority = original_priority;
+                end;
+            end);
+        end);
+    end
+
     -- Vanta: Reactions (Auto Parry tab -> Reactions). Decides, per parry, whether to
     -- parry normally or: hold block through the hit, roll instead, or fake a mistimed
     -- parry (tap block early, then roll when the hit actually lands).
@@ -22331,13 +22394,8 @@ end
     
     local function process_actions(self, track, data, pot_name, to_evaluate_actions, action_type, blocked_bi, blocked_af)
         local current_rtt = Latency:get_ping()
-        local alotted = 0
-        -- Vanta: timings are measured against real elapsed time from here, not the
-        -- sum of requested waits (task.wait always overshoots a little, so multi-hit
-        -- moves used to drift later with every hit). Intentional pauses (End Block,
-        -- delay-until-in-hitbox, RPUE loops) shift timing_start so they keep their
-        -- old meaning.
-        local timing_start = tick()
+        -- Vanta: time already spent waiting out a flash breaker (0 normally).
+        local alotted = (self.running_tracks[track] and self.running_tracks[track].pre_delay) or 0
         local forced_roll_next
 
         local track_state = self.running_tracks[track];
@@ -22375,7 +22433,7 @@ end;
             local offset = action.offset or CFrame.new();
             local type = action.type or "Parry";
             local ignore_anim_early_end = action.ignore_animation_early_end or data.ignore_animation_early_end;
-            local time = (action.when or 0) + ((aztup.flags.global_timing_offset or 0) / 1000);
+            local time = action.when or 0;
             local name = action.name or data.name or pot_name or "Unidentified " .. track.Animation.AnimationId;
 
             if data.ignore_hitbox_check or data.ignore_hitbox or action.ignore_hitbox_check then
@@ -22387,11 +22445,8 @@ end;
             end;
             
             if type == "End Block" and self.blocked then
-                alotted = tick() - timing_start;
                 local wait_time = (time - alotted) - current_rtt
-                local paused_at = tick();
                 task.wait(wait_time);
-                timing_start += tick() - paused_at;
                 DefendActionManager:add_action(self.entity, "unblock", tick());
                 self.blocked = false;
                 continue            
@@ -22435,14 +22490,11 @@ end;
             
 
             if action.delay_until_in_hitbox then
-                local paused_at = tick();
                 repeat
                     task.wait();
                 until in_hitbox(true) or not action.ignore_early_end and not track_still_active(track, self.entity) and not ignore_anim_early_end;
-                timing_start += tick() - paused_at;
             end;
 
-            alotted = tick() - timing_start;
             local start = tick();
             local input_task = create_block_input_task(self, track, action, data, action_type, name, time, alotted, ignore_anim_early_end, blocked_bi, start, in_hitbox);
             self:track_cleanup(track, function()
@@ -22478,7 +22530,6 @@ end;
                 continue            
 end;
 
-            alotted = tick() - timing_start;
             local wait_time = (time - alotted) - current_rtt
 
             -- Vanta: Reactions. Block / Misstime need to act *before* the hit, so
@@ -22570,6 +22621,7 @@ end;
                     end);
 
                 task.wait(wait_time)
+                alotted += wait_time
             elseif wait_time ~= wait_time or wait_time > 0 then
                 return debug_print("[%s] Skipping action %i, wait time invalid: %.2f", name, index, wait_time)            
 end;
@@ -22595,7 +22647,6 @@ end
 end
 
             if type == "RPUE Parry" then
-                local paused_at = tick();
                 local blocked = false;
                 while action.condition() do
                     if action.should() then
@@ -22612,7 +22663,6 @@ end
                     task.wait();
                     DefendActionManager.unblock:FireServer();
                 end;
-                timing_start += tick() - paused_at;
                 continue            
 end;
 
@@ -22736,6 +22786,7 @@ end;
     
     
     
+    local movement_anim_ids;
     local function log_info_if_enabled(self, track)
         if not (aztup.flags.info_logger and self.entity:FindFirstChild("HumanoidRootPart") and self.entity.Name ~= local_player.character.Name) then
             return        
@@ -22751,16 +22802,20 @@ end
             if name:lower():match("parried") then return end
             if name:lower():match("idle") then return end
 
-            local disallowed = false;
-            local assets = game:GetService("ReplicatedStorage"):FindFirstChild("Assets");
-            for _, anim in assets.Anims.Movement:GetDescendants() do
-                if anim:IsA("Animation") and anim.AnimationId == track.Animation.AnimationId then
-                    disallowed = true;
-                    break                
-end;
-            end
+            -- Vanta: the set of movement animations is built once instead of
+            -- scanning the whole Movement folder for every logged animation.
+            if not movement_anim_ids then
+                local ids = {};
+                local assets = game:GetService("ReplicatedStorage"):FindFirstChild("Assets");
+                for _, anim in assets.Anims.Movement:GetDescendants() do
+                    if anim:IsA("Animation") then
+                        ids[anim.AnimationId] = true;
+                    end;
+                end;
+                movement_anim_ids = ids; -- only cached once fully built
+            end;
 
-            if disallowed then return end
+            if movement_anim_ids[track.Animation.AnimationId] then return end
 
             Library:AddTextToInfoLogger(string.format("%s %s %s", name, tostring(track.Animation.AnimationId:match("%d+")), self.entity.Name), tostring(track.Animation.AnimationId:match("%d+")), function()
                 if getgenv().timing_builder then getgenv().timing_builder:load_track(track, self.entity); end;
@@ -22812,12 +22867,22 @@ end;
 
         log_info_if_enabled(self, track);
 
+        -- Vanta: "Vanta Flash" AP breaker - applied in the same frame the animation
+        -- starts (before any wait) so the flash replicates with the Play itself.
+        if data and self.entity.Name == local_player.character.Name then
+            flash_break(track);
+        end;
+
         if not data or tasks >= (aztup.flags.task_concurrency or 25) then
             return        
 end;
 
         task.wait(1 / 60); 
-        if anti_ap_breaker:initial_check(self, track) then 
+        -- Vanta: Flash Immunity - waits out a flash breaker (0 for normal anims).
+        local is_own = self.entity.Name == local_player.character.Name;
+        local settle_delay = (not is_own) and anti_ap_breaker:settle(self, track) or 0;
+        -- Our own flashed attacks would fail the start checks by design; skip them.
+        if not (is_own and flashed_tracks[track]) and anti_ap_breaker:initial_check(self, track) then 
             tasks = math.max(0, tasks - 1);
             return 
         end
@@ -22892,7 +22957,7 @@ end;
 end
         end
 
-        self.running_tracks[track] = { thread = coroutine.running(), feint_threads = {}, cleanups = {} };
+        self.running_tracks[track] = { thread = coroutine.running(), feint_threads = {}, cleanups = {}, pre_delay = settle_delay };
 
         local actions = action_builder.new({ signal = true })
         local to_evaluate_actions
@@ -22952,15 +23017,7 @@ end
             
             
             
-            -- Vanta: actions pushed with action:play() were already handled through the
-            -- signal above; actions:get() still contains them, which used to process
-            -- them a second time (two parries for one hit). Skip those here.
-            to_evaluate_actions = {};
-            for _, a in actions:get() do
-                if not table.find(signal_actions, a) then
-                    table.insert(to_evaluate_actions, a);
-                end;
-            end;
+            to_evaluate_actions = actions:get()
             if #to_evaluate_actions > 0 then
                 local action_type = data.action_type or "Undefined"
                 local blocked_bi = aztup_options.blocked_safe_input_moves.Value[action_type]
@@ -23062,6 +23119,77 @@ function anti_ap_breaker:log(type, ...)
     Logger:short_notify("[Anti AP]", string.format(...))
 end
 
+--[[
+    Vanta: Flash Immunity (always on while Anti AP Breaker is on).
+
+    "Flash" breakers (including Vanta's own, see animator-handler flash_break) make a
+    real attack look fake for the first ~100ms - Core/Idle priority, or a huge speed -
+    because the stock checks above only look once, right as the animation starts.
+    Instead of rejecting straight away, we wait (max 400ms - longer than the longest
+    Vanta Flash) for the animation to
+    settle and judge it on how it looks after that. The time waited is taken off the
+    parry timing, so the parry still lands on time.
+
+    Only animations that fail one of these start checks are ever delayed; everything
+    else goes through exactly as before. An animation that stays Core/fast the whole
+    time is still rejected, just up to 400ms later.
+
+    If the flash was a speed boost, the attacker's animation may have jumped ahead
+    and so end early on our side; we keep treating it as playing until it would
+    have naturally ended, so the parry isn't cancelled as "ended early".
+]]
+local settled_tracks = setmetatable({}, { __mode = "k" });
+local expected_end = setmetatable({}, { __mode = "k" });
+
+function anti_ap_breaker:still_expected(track)
+    local t = expected_end[track];
+    return t ~= nil and tick() < t
+end
+
+function anti_ap_breaker:flash_reason(track)
+    if self:is_filter_on("S >= X (S = Speed)") and track.Speed >= aztup.flags.anti_ap_breaker_max_speed then
+        return "speed"
+    end;
+    -- Length 0 = animation not loaded yet; leave that to initial_check (unchanged).
+    if self:is_filter_on("Length <= Xms") and track.Speed > 0 and track.Length > 0 and track.Length / track.Speed <= (aztup.flags.anti_ap_breaker_length_ms / 1000) then
+        return "length"
+    end;
+    if self:is_filter_on("Core Priority") and track.Priority == Enum.AnimationPriority.Core then
+        return "core priority"
+    end;
+    if self:is_filter_on("Idle Priority") and track.Priority == Enum.AnimationPriority.Idle then
+        return "idle priority"
+    end;
+    return nil
+end
+
+-- Returns how many seconds were spent waiting (0 = no wait, the normal case).
+function anti_ap_breaker:settle(defender, track)
+    if not defender.is_player or not self:on() then
+        return 0
+    end;
+
+    local reason = self:flash_reason(track);
+    if not reason then
+        return 0
+    end;
+
+    local started = tick();
+    while track.IsPlaying and self:flash_reason(track) and tick() - started < 0.4 do
+        task.wait();
+    end;
+
+    local waited = tick() - started;
+    if not self:flash_reason(track) then
+        settled_tracks[track] = true;
+        if (reason == "speed" or reason == "length") and track.Speed > 0 and track.Length > 0 then
+            expected_end[track] = started + track.Length / track.Speed;
+        end;
+        self:log("Flash Breaker", "Flash breaker settled (%s) after %dms - treating as real", reason, math.floor(waited * 1000));
+    end;
+    return waited
+end
+
 function anti_ap_breaker:initial_check(defender, track)
     if not defender.is_player or not self:on() then
         return false    
@@ -23094,7 +23222,7 @@ end
 
     -- Vanta: Late Start. Already 85%+ through when first seen - a real attack can't
     -- still land from there; breakers play tracks from the end.
-    if self:is_filter_on("Late Start") and track.Length > 0 and track.TimePosition / track.Length >= 0.85 then
+    if self:is_filter_on("Late Start") and not settled_tracks[track] and track.Length > 0 and track.TimePosition / track.Length >= 0.85 then
         self:log("Late Start", "Track started %d%% through", math.floor(track.TimePosition / track.Length * 100))
         return true
     end;
@@ -23162,6 +23290,18 @@ function anti_ap_breaker:final_check(defender, track, skip)
     if not self:on() then
         return false    
 end
+
+    -- Vanta: Demotion Immunity. Real attacks never have their priority lowered while
+    -- playing; breakers (e.g. Aggressive 3) do it so the attack looks "hidden" behind
+    -- other animations or faded out. If the priority is lower than when we first saw
+    -- it, it's a real attack being hidden - don't call it fake.
+    local first_priority = priority_cache[track];
+    if first_priority and track.Priority.Value < first_priority.Value then
+        if not skip then
+            self:log("Flash Breaker", "Priority was lowered mid-attack (breaker) - treating as real");
+        end;
+        return false
+    end;
     
         
     local alive = self:is_playing(track, defender.entity);
@@ -27191,7 +27331,7 @@ local last_notif_warn = 0;
 
 local feature;
 feature = Feature:new("ap_breaker", game:GetService("RunService").RenderStepped, LPH_JIT(function(delta_time)
-    if aztup_options.ap_breaker_type.Value == "Aggressive 4 (Blatant)" or aztup_options.ap_breaker_type.Value == "Aggressive 3 (Blatant)" or aztup_options.ap_breaker_type.Value == "Spoof" then return end
+    if aztup_options.ap_breaker_type.Value == "Aggressive 4 (Blatant)" or aztup_options.ap_breaker_type.Value == "Aggressive 3 (Blatant)" or aztup_options.ap_breaker_type.Value == "Spoof" or aztup_options.ap_breaker_type.Value == "Vanta Flash" then return end
     local intensity = aztup.flags.ap_breaker_intensity or 5;
     animation_budget = animation_budget + ((delta_time or 0) * intensity);
 
@@ -43661,6 +43801,39 @@ function Appearance.build(ui_tab)
             apply_font(value);
         end);
 
+    -- Start Hidden: menu, watermark and keybind list stay hidden after executing
+    -- until the menu is opened for the first time. Saved outside configs
+    -- (fflag "dont_auto_show_ui", read when the window is created).
+    box:newToggle("start_hidden", "Start Hidden", fflags:get("dont_auto_show_ui") == true,
+        "When you execute, nothing shows (no menu, watermark, keybind list or 'config loaded' popup) until you press your menu key. Takes effect next execute.",
+        function(on)
+            fflags:set("dont_auto_show_ui", on == true);
+        end);
+
+    if fflags:get("dont_auto_show_ui") and not Library.Toggled then
+        local hide_conn;
+        hide_conn = services.RunService.Heartbeat:Connect(function()
+            if Library.Toggled or Library.Unloaded then
+                hide_conn:Disconnect();
+                -- First time the menu opens: bring back whatever the user has on.
+                if aztup_toggles.Watermark then
+                    Library:SetWatermarkVisibility(aztup_toggles.Watermark.Value);
+                end;
+                if Library.KeybindFrame and aztup_toggles.KeybindShower then
+                    Library.KeybindFrame.Visible = aztup_toggles.KeybindShower.Value;
+                end;
+                return;
+            end;
+            if Library.Watermark and Library.Watermark.Visible then
+                Library.Watermark.Visible = false;
+            end;
+            if Library.KeybindFrame and Library.KeybindFrame.Visible then
+                Library.KeybindFrame.Visible = false;
+            end;
+        end);
+        Library:GiveSignal(hide_conn);
+    end;
+
     create_glow(Library.PRWindow.Holder);
 
     if saved_font ~= "Lexend" then
@@ -44872,11 +45045,6 @@ return function(tab)
     ------------------------------------------------------------------ Advanced
     advanced:newLabel("Fine tuning. The defaults are fine for most people.", true);
 
-    advanced:newSlider("global_timing_offset", "Global Timing Offset", 0, -100, 100, 0, true, "ms", nil,
-        "Shift EVERY parry/dodge earlier (-) or later (+). Use if Auto Parry is consistently a little early or late for you.");
-    advanced:newToggle("ping_smoothing", "Ping Smoothing", true,
-        "Uses your median ping over the last ~2s instead of the raw value, so one lag spike doesn't make a parry fire early.");
-
     advanced:newSlider("apc_timing_offset", "M1 Timing Offset", 0, -150, 150, 0, true, "ms", nil,
         "Shift parries on player weapon M1s earlier (-) or later (+).");
     advanced:newSlider("unparriable_dodge_offset", "Unparriable Move Latency", 0, -200, 200, 0, true, "ms", nil,
@@ -44949,6 +45117,7 @@ return function(tab)
         "Fadetime",
         "Late Start",
         "Duplicate Spam",
+        "Flash Breaker",
     },{
         "WT <= X (WT = WeightTarget)",
         "Core Priority",
@@ -44957,6 +45126,7 @@ return function(tab)
         "S >= X (S = Speed)",
         "Late Start",
         "Duplicate Spam",
+        "Flash Breaker",
     }, true, 'Logging Filters for AP breaker.')
 
     local speed_max, raw_speed_max = advanced:newDependencyBox("validation_filters", "S >= X (S = Speed)", true);
@@ -45748,6 +45918,7 @@ return function(tab)
 
     local ap_breaker_dependency_box = other_groupbox:newDependencyBox("ap_breaker");
     local types = {
+        "Vanta Flash",
         "Aggressive 3 (Blatant)",
         "Aggressive 2 (Blatant)",
         "Aggressive", 
@@ -45758,7 +45929,17 @@ return function(tab)
         table.insert(types, "Tester Aggressive 1 (Blatant)");
     end;
 
-    ap_breaker_dependency_box:newDropdown("ap_breaker_type", "AP Breaker Type", types, "Passive", false, "Aggressive will cause you to shake - Use with caution.");
+    ap_breaker_dependency_box:newDropdown("ap_breaker_type", "AP Breaker Type", types, "Passive", false, "Aggressive will cause you to shake - Use with caution. Vanta Flash: beats the stock Anti AP Breaker without visibly changing your animations.");
+
+    local flash_box, raw_flash_box = other_groupbox:newDependencyBox();
+    flash_box:newDropdown("vanta_flash_mode", "Flash Mode", { "Priority", "Speed", "Both" }, "Both", false,
+        "Priority: briefly makes the attack look like a background anim. Speed: briefly makes it look sped up. Both: either check catches it.");
+    flash_box:newSlider("vanta_flash_ms", "Flash Duration", 100, 40, 200, 0, true, "ms", nil,
+        "How long the attack looks fake at the start. Longer = more reliable against laggy enemies, but the anim skips a little more.");
+    raw_flash_box:SetupDependencies({
+        { aztup_toggles.ap_breaker, true },
+        { aztup_options.ap_breaker_type, "Vanta Flash" },
+    });
     
     ap_breaker_dependency_box:newDropdown("aggressive_3_break_on", "Break On", {
         "Criticals",
@@ -46063,10 +46244,6 @@ function tabs:create_fast_flags(tab)
 		Logger:long_notify_sound("now set to:", fflags:get("dont_notify_on_first_exec"))
 	end);	
 
-	groupbox:newButton("disable auto showing ui", function()
-		fflags:set("dont_auto_show_ui", not fflags:get("dont_auto_show_ui"));
-		Logger:long_notify_sound("auto show ui now set to:", not fflags:get("dont_auto_show_ui"))
-	end);	
 
 	groupbox:newButton("auto load", function()
 		fflags:set("auto_load", not fflags:get("auto_load"));
@@ -46805,6 +46982,7 @@ end;
             "speed",
             "infinite_jump",
             "spotify_redirect_url",
+            "start_hidden",
             
         })
         SaveManager:SetFolder('Vanta/Deepwoken-Config')
@@ -49239,13 +49417,13 @@ local latency = {};
 local ping = services.Stats:FindFirstChild("Data Ping", true);
 local notified = false;
 
-local function raw_ping()
+function latency:get_ping()
     if not ping then
         if not notified then
             notified = true;
             Logger:short_notify("Cant find ping stat, Ignore this if kicked.");
         end
-        return 0
+        return 0    
 end
 
     local val;
@@ -49254,62 +49432,6 @@ end
     val = ping:GetValue();
     setthreadidentity(old);
     return val / 1000
-end
-
---[[
-    Vanta: Ping Smoothing (Auto Parry -> Advanced, on by default).
-    Every timing subtracts ping, so a single spike used to make that parry fire early.
-    Now the median of the last ~2s of samples is used: one-off spikes are ignored,
-    real ping changes still come through within a second or two.
-]]
-local SAMPLE_EVERY = 0.25;
-local MAX_SAMPLES = 8;
-local samples = {};
-
-local function add_sample()
-    table.insert(samples, raw_ping());
-    if #samples > MAX_SAMPLES then
-        table.remove(samples, 1);
-    end;
-end
-
--- Sampled in the background so the window is always the last ~2s, even after
--- standing around idle.
--- One sampler per load: re-executing the script replaces the token and the old
--- loop stops.
-local session = {};
-getgenv().vanta_latency_session = session;
-task.spawn(function()
-    while task.wait(SAMPLE_EVERY) do
-        if getgenv().vanta_latency_session ~= session then break end;
-        pcall(add_sample);
-    end;
-end);
-
-local function smoothed_ping()
-    if #samples == 0 then
-        pcall(add_sample);
-        if #samples == 0 then return 0 end;
-    end;
-
-    local sorted = table.clone(samples);
-    table.sort(sorted);
-    local n = #sorted;
-    if n % 2 == 1 then
-        return sorted[(n + 1) / 2]
-    end;
-    return (sorted[n / 2] + sorted[n / 2 + 1]) / 2
-end
-
-function latency:get_ping()
-    if aztup and aztup.flags and aztup.flags.ping_smoothing == false then
-        return raw_ping()
-    end;
-    return smoothed_ping()
-end;
-
-function latency:get_raw_ping()
-    return raw_ping()
 end;
 
 function latency:half_ping()
@@ -53264,7 +53386,7 @@ local SaveManager = {} do
 			auto_loading = true;
 			local success, err = self:Load(name)
 			auto_loading = false;
-			if isfile("Vanta/silent_mode_toggle") then return end
+			if isfile("Vanta/silent_mode_toggle") or fflags:get("dont_auto_show_ui") then return end
 
 			if not success then
 				return self.Library:NotifyWithSound('Failed to load autoload config: ' .. err, 50)
@@ -53279,7 +53401,7 @@ local SaveManager = {} do
 			auto_loading = true;
 			local success, err = self:Load(name)
 			auto_loading = false;
-			if isfile("Vanta/silent_mode_toggle") then return end
+			if isfile("Vanta/silent_mode_toggle") or fflags:get("dont_auto_show_ui") then return end
 
 			if not success then
 				return self.Library:NotifyWithSound('Failed to load autoload config: ' .. err, 50)

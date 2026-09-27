@@ -40,6 +40,7 @@ end;
             "speed",
             "infinite_jump",
             "spotify_redirect_url",
+            "start_hidden",
             
         })
         SaveManager:SetFolder('Vanta/Deepwoken-Config')

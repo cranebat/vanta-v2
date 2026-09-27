@@ -187,6 +187,7 @@ return function(tab)
 
     local ap_breaker_dependency_box = other_groupbox:newDependencyBox("ap_breaker");
     local types = {
+        "Vanta Flash",
         "Aggressive 3 (Blatant)",
         "Aggressive 2 (Blatant)",
         "Aggressive", 
@@ -197,7 +198,17 @@ return function(tab)
         table.insert(types, "Tester Aggressive 1 (Blatant)");
     end;
 
-    ap_breaker_dependency_box:newDropdown("ap_breaker_type", "AP Breaker Type", types, "Passive", false, "Aggressive will cause you to shake - Use with caution.");
+    ap_breaker_dependency_box:newDropdown("ap_breaker_type", "AP Breaker Type", types, "Passive", false, "Aggressive will cause you to shake - Use with caution. Vanta Flash: beats the stock Anti AP Breaker without visibly changing your animations.");
+
+    local flash_box, raw_flash_box = other_groupbox:newDependencyBox();
+    flash_box:newDropdown("vanta_flash_mode", "Flash Mode", { "Priority", "Speed", "Both" }, "Both", false,
+        "Priority: briefly makes the attack look like a background anim. Speed: briefly makes it look sped up. Both: either check catches it.");
+    flash_box:newSlider("vanta_flash_ms", "Flash Duration", 100, 40, 200, 0, true, "ms", nil,
+        "How long the attack looks fake at the start. Longer = more reliable against laggy enemies, but the anim skips a little more.");
+    raw_flash_box:SetupDependencies({
+        { aztup_toggles.ap_breaker, true },
+        { aztup_options.ap_breaker_type, "Vanta Flash" },
+    });
     
     ap_breaker_dependency_box:newDropdown("aggressive_3_break_on", "Break On", {
         "Criticals",

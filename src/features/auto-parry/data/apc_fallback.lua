@@ -138,6 +138,31 @@ end
 
 --------------------------------------------------------------------------- build
 
+local class_cache = {};
+
+-- Returns { kind = "mantra", name } | { kind = "skip", reason } | { kind = "attack" },
+-- plus .eruption = true if the name mentions an eruption.
+local function classify(track, path)
+    local joined, tokens = describe(track, path);
+    local eruption = joined:find("eruption", 1, true) ~= nil;
+
+    local mantra = identify_mantra(joined);
+    if mantra then
+        return { kind = "mantra", name = mantra, eruption = eruption };
+    end;
+
+    for _, token in tokens do
+        for _, word in NON_ATTACK_WORDS do
+            if token:sub(1, #word) == word then
+                return { kind = "skip", reason = "not an attack (" .. token .. ")", eruption = eruption };
+            end;
+        end;
+    end;
+
+    return { kind = "attack", eruption = eruption };
+end
+
+
 -- entity: attacker. track: the AnimationTrack. path: "Folder/Sub/AnimName" under
 -- ReplicatedStorage.Assets.Anims if the id is known there (else nil).
 -- Returns (data, reason): data is a PR timing table or nil; reason is for debug.
@@ -146,10 +171,19 @@ function apc_fallback.build(entity, track, path)
         return nil, "APC fallback off";
     end;
 
-    local joined, tokens = describe(track, path);
+    -- What kind of animation this is depends only on the animation itself, so it's
+    -- worked out once per animation and cached (this used to run ~700 string
+    -- searches for every untimed animation anyone played - walking, idling, ...).
+    local anim = track and track.Animation;
+    local key = (anim and anim.AnimationId or "?") .. "|" .. (path or "") .. "|" .. (anim and anim.Parent and anim.Parent.Name or "");
+    local class = class_cache[key];
+    if not class then
+        class = classify(track, path);
+        class_cache[key] = class;
+    end;
 
-    local mantra = identify_mantra(joined);
-    if mantra then
+    if class.kind == "mantra" then
+        local mantra = class.name;
         local rule = UNPARRIABLE[mantra];
         if rule then
             return dodge_data(mantra, rule.when, rule.size);
@@ -163,8 +197,8 @@ function apc_fallback.build(entity, track, path)
     end;
 
     -- Generic "eruption" anim with no element in its name: if the caster's only
-    -- eruption mantra is Ice Eruption, it's that.
-    if joined:find("eruption", 1, true) then
+    -- eruption mantra is Ice Eruption, it's that. (Depends on the caster, so not cached.)
+    if class.eruption then
         local player = game:GetService("Players"):GetPlayerFromCharacter(entity);
         local backpack = player and player:FindFirstChild("Backpack");
         if backpack and backpack:FindFirstChild("Mantra:EruptionIce{{Ice Eruption}}") then
@@ -181,12 +215,8 @@ function apc_fallback.build(entity, track, path)
         end;
     end;
 
-    for _, token in tokens do
-        for _, word in NON_ATTACK_WORDS do
-            if token:sub(1, #word) == word then
-                return nil, "not an attack (" .. token .. ")";
-            end;
-        end;
+    if class.kind == "skip" then
+        return nil, class.reason;
     end;
 
     local w = weapon.data(entity);

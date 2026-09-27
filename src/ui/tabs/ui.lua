@@ -24,10 +24,6 @@ function tabs:create_fast_flags(tab)
 		Logger:long_notify_sound("now set to:", fflags:get("dont_notify_on_first_exec"))
 	end);	
 
-	groupbox:newButton("disable auto showing ui", function()
-		fflags:set("dont_auto_show_ui", not fflags:get("dont_auto_show_ui"));
-		Logger:long_notify_sound("auto show ui now set to:", not fflags:get("dont_auto_show_ui"))
-	end);	
 
 	groupbox:newButton("auto load", function()
 		fflags:set("auto_load", not fflags:get("auto_load"));

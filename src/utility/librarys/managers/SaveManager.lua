@@ -346,7 +346,7 @@ local SaveManager = {} do
 			auto_loading = true;
 			local success, err = self:Load(name)
 			auto_loading = false;
-			if isfile("Vanta/silent_mode_toggle") then return end
+			if isfile("Vanta/silent_mode_toggle") or fflags:get("dont_auto_show_ui") then return end
 
 			if not success then
 				return self.Library:NotifyWithSound('Failed to load autoload config: ' .. err, 50)
@@ -361,7 +361,7 @@ local SaveManager = {} do
 			auto_loading = true;
 			local success, err = self:Load(name)
 			auto_loading = false;
-			if isfile("Vanta/silent_mode_toggle") then return end
+			if isfile("Vanta/silent_mode_toggle") or fflags:get("dont_auto_show_ui") then return end
 
 			if not success then
 				return self.Library:NotifyWithSound('Failed to load autoload config: ' .. err, 50)

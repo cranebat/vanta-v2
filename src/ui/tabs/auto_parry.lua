@@ -110,11 +110,6 @@ return function(tab)
     ------------------------------------------------------------------ Advanced
     advanced:newLabel("Fine tuning. The defaults are fine for most people.", true);
 
-    advanced:newSlider("global_timing_offset", "Global Timing Offset", 0, -100, 100, 0, true, "ms", nil,
-        "Shift EVERY parry/dodge earlier (-) or later (+). Use if Auto Parry is consistently a little early or late for you.");
-    advanced:newToggle("ping_smoothing", "Ping Smoothing", true,
-        "Uses your median ping over the last ~2s instead of the raw value, so one lag spike doesn't make a parry fire early.");
-
     advanced:newSlider("apc_timing_offset", "M1 Timing Offset", 0, -150, 150, 0, true, "ms", nil,
         "Shift parries on player weapon M1s earlier (-) or later (+).");
     advanced:newSlider("unparriable_dodge_offset", "Unparriable Move Latency", 0, -200, 200, 0, true, "ms", nil,
@@ -187,6 +182,7 @@ return function(tab)
         "Fadetime",
         "Late Start",
         "Duplicate Spam",
+        "Flash Breaker",
     },{
         "WT <= X (WT = WeightTarget)",
         "Core Priority",
@@ -195,6 +191,7 @@ return function(tab)
         "S >= X (S = Speed)",
         "Late Start",
         "Duplicate Spam",
+        "Flash Breaker",
     }, true, 'Logging Filters for AP breaker.')
 
     local speed_max, raw_speed_max = advanced:newDependencyBox("validation_filters", "S >= X (S = Speed)", true);
