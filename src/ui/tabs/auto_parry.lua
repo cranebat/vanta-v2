@@ -161,6 +161,8 @@ return function(tab)
         "Idle Priority",
         "Length <= Xms",
         "Fadetime",
+        "Late Start",
+        "Duplicate Spam",
     },{
         "WT <= X (WT = WeightTarget)",
         "Core Priority",
@@ -168,7 +170,7 @@ return function(tab)
         "Priority Hiding",
         "S >= X (S = Speed)",
         "Fadetime"
-    }, true, 'Filters for AP breaker.')
+    }, true, 'Filters for AP breaker. Late Start: skips anims first seen 85%+ finished. Duplicate Spam: ignores the same anim replayed within 150ms by the same player.')
 
     anti_ap_breaker:newDropdown('validation_log_filters', 'Validation Log Filters', {
         "WT <= X (WT = WeightTarget)",
@@ -178,12 +180,16 @@ return function(tab)
         "Idle Priority",
         "Length <= Xms",
         "Fadetime",
+        "Late Start",
+        "Duplicate Spam",
     },{
         "WT <= X (WT = WeightTarget)",
         "Core Priority",
         "Idle Priority",
         "Priority Hiding",
-        "S >= X (S = Speed)"
+        "S >= X (S = Speed)",
+        "Late Start",
+        "Duplicate Spam",
     }, true, 'Logging Filters for AP breaker.')
 
     local speed_max, raw_speed_max = advanced:newDependencyBox("validation_filters", "S >= X (S = Speed)", true);

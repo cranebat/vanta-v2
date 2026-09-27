@@ -3,6 +3,17 @@ local anti_ap_breaker = {}
 local dead_tracks = setmetatable({}, { __mode = "k" })
 local track_seen_at = setmetatable({}, { __mode = "k" })
 local priority_cache = {};
+local recent_plays = {}; -- "entity|animId" -> tick() of last play (Duplicate Spam)
+
+-- Keep recent_plays small.
+task.spawn(function()
+    while task.wait(10) do
+        local now = tick();
+        for key, t in recent_plays do
+            if now - t > 5 then recent_plays[key] = nil end;
+        end;
+    end;
+end);
 
 function anti_ap_breaker:on()
     return aztup.flags.basic_validation
@@ -55,9 +66,29 @@ end
         return true
     end;
 
-    if track.Speed == 0 and self:is_filter_on("Speed == 0") then 
-        return self:log("Speed == 0", "Track is frozen")    
+    if track.Speed == 0 and self:is_filter_on("Speed == 0") then
+        return self:log("Speed == 0", "Track is frozen")
 end
+
+    -- Vanta: Late Start. Already 85%+ through when first seen - a real attack can't
+    -- still land from there; breakers play tracks from the end.
+    if self:is_filter_on("Late Start") and track.Length > 0 and track.TimePosition / track.Length >= 0.85 then
+        self:log("Late Start", "Track started %d%% through", math.floor(track.TimePosition / track.Length * 100))
+        return true
+    end;
+
+    -- Vanta: Duplicate Spam. Same animation from the same player replayed within
+    -- 150ms - no real attack repeats that fast. The first one is still handled.
+    if self:is_filter_on("Duplicate Spam") then
+        local key = tostring(defender.entity) .. "|" .. tostring(track.Animation and track.Animation.AnimationId);
+        local now = tick();
+        local last = recent_plays[key];
+        recent_plays[key] = now;
+        if last and now - last < 0.15 then
+            self:log("Duplicate Spam", "Same anim replayed after %dms", math.floor((now - last) * 1000))
+            return true
+        end;
+    end;
 
     track_seen_at[track] = tick();
     priority_cache[track] = track.Priority;
