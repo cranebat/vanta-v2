@@ -128,6 +128,10 @@ return function(tab)
         "Block Instead Of Parry: how long to keep holding block after the hit.");
     advanced:newSlider("misstime_early_ms", "Misstime Early By", 220, 150, 500, 0, true, "ms", nil,
         "Fake Misstime Parry: how long before the hit the fake parry tap happens.");
+    advanced:newSlider("back_dodge_walk_delay", "Walk Forward Delay", 60, 0, 300, 0, true, "ms", nil,
+        "Walk Forward On Back Dodge: wait after the roll starts before walking forward (too early turns it into a forward roll).");
+    advanced:newSlider("back_dodge_walk_duration", "Walk Forward Duration", 350, 100, 1000, 0, true, "ms", nil,
+        "Walk Forward On Back Dodge: how long to walk forward for.");
     advanced:newDivider();
 
     advanced:newSlider("dont_process_players_over_studs", "Dont Process Players Over", 500, 1, 10000, 1, true, "s");
@@ -225,6 +229,12 @@ return function(tab)
         "Chance to roll instead of parrying (only when a roll is available).");
     reactions:newSlider("misstime_chance", "Fake Misstime Parry", 0, 0, 100, 0, true, "%", nil,
         "Chance to tap block early (looks like a mistimed parry), then roll when the hit actually lands.");
+    reactions:newDivider();
+
+    reactions:newToggle("back_dodge_walk_forward", "Walk Forward On Back Dodge", false,
+        "When Auto Parry rolls backwards, walks forward during the roll so you stay roughly where you were. Looks more human.");
+    reactions:newSlider("back_dodge_walk_chance", "Walk Forward Chance", 100, 0, 100, 0, true, "%", nil,
+        "How often it walks forward on a back dodge.");
 
     local randomization_dependency_box = reactions_tabbox:newTab("Humanize"):newDependencyBox("ap_randomization");
     randomization_dependency_box:newLabel("Turn on Humanization (Main tab) to use these.", true);

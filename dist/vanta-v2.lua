@@ -20685,6 +20685,43 @@ end
         return chosen or "Skip"
     end
 
+    -- Vanta: Walk Forward On Back Dodge. A roll with no movement input (or while
+    -- moving backwards) is a back roll; holding W for a moment once the roll has
+    -- started keeps you roughly where you were, like a player stepping back in.
+    local VirtualInputManager = game:GetService("VirtualInputManager");
+    local function is_back_roll()
+        local humanoid, root = local_player.humanoid, local_player.root_part;
+        if not humanoid or not root then return false end;
+        local move = humanoid.MoveDirection;
+        return move.Magnitude < 0.1 or move.Unit:Dot(root.CFrame.LookVector) < -0.5
+    end
+
+    local function walk_forward_after_roll(was_back_roll)
+        if not was_back_roll or not aztup.flags.back_dodge_walk_forward then return end;
+        if math.random() * 100 >= (aztup.flags.back_dodge_walk_chance or 100) then return end;
+
+        local UIS = services.UserInputService;
+        if UIS:IsKeyDown(Enum.KeyCode.W) then return end; -- you're already walking forward
+
+        local delay_s = (aztup.flags.back_dodge_walk_delay or 60) / 1000;
+        local duration = (aztup.flags.back_dodge_walk_duration or 350) / 1000;
+
+        -- Don't let auto sprint turn the fake W press into a sprint.
+        local sprint = aztup.features and aztup.features.auto_sprint;
+        if sprint and sprint.resume_at then
+            sprint.resume_at = math.max(sprint.resume_at, tick() + delay_s + duration + 0.15);
+        end;
+
+        task.spawn(function()
+            task.wait(delay_s);
+            if UIS:IsKeyDown(Enum.KeyCode.W) then return end;
+
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.W, false, game);
+            task.wait(duration);
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.W, false, game);
+        end);
+    end
+
     LPH_NO_VIRTUALIZE(function()
         function DefendActionManager:defend_action_block(action, dont_pass)
         
@@ -20739,8 +20776,10 @@ elseif aztup_options.fallbacks.Value.Block then
     
         function DefendActionManager:defend_action_dodge(action)
             local type = action.mob.Name:sub(1, 1) == "." and "pve_" or "pvp_"
+            local back_roll = is_back_roll();
             if aztup.flags[type .. "blatant_roll"] and not action.full then
                 KeyHandler:get_key("Dodge"):FireServer("roll", nil, nil, false);
+                walk_forward_after_roll(back_roll);
             
                 if aztup.flags[type .. "blatant_roll_with_anims"] then
                     task.spawn(function() 
@@ -20808,6 +20847,7 @@ end;
         
             Keybinds.ForceActionDown("Dodge")
             Keybinds.ForceActionUp("Dodge")
+            walk_forward_after_roll(back_roll);
         
             if roll_cancel and aztup.flags[type .. "roll_cancel_chance"] > (math.random() * 100) and not action.full then
                 task.wait(math.random(aztup.flags[type .. "min_roll_cancel_delay"], aztup.flags[type .. "max_roll_cancel_delay"] >= aztup.flags[type .. "min_roll_cancel_delay"] and aztup.flags[type .. "max_roll_cancel_delay"] or aztup.flags[type .. "min_roll_cancel_delay"]) / 1000)
@@ -44772,6 +44812,10 @@ return function(tab)
         "Block Instead Of Parry: how long to keep holding block after the hit.");
     advanced:newSlider("misstime_early_ms", "Misstime Early By", 220, 150, 500, 0, true, "ms", nil,
         "Fake Misstime Parry: how long before the hit the fake parry tap happens.");
+    advanced:newSlider("back_dodge_walk_delay", "Walk Forward Delay", 60, 0, 300, 0, true, "ms", nil,
+        "Walk Forward On Back Dodge: wait after the roll starts before walking forward (too early turns it into a forward roll).");
+    advanced:newSlider("back_dodge_walk_duration", "Walk Forward Duration", 350, 100, 1000, 0, true, "ms", nil,
+        "Walk Forward On Back Dodge: how long to walk forward for.");
     advanced:newDivider();
 
     advanced:newSlider("dont_process_players_over_studs", "Dont Process Players Over", 500, 1, 10000, 1, true, "s");
@@ -44869,6 +44913,12 @@ return function(tab)
         "Chance to roll instead of parrying (only when a roll is available).");
     reactions:newSlider("misstime_chance", "Fake Misstime Parry", 0, 0, 100, 0, true, "%", nil,
         "Chance to tap block early (looks like a mistimed parry), then roll when the hit actually lands.");
+    reactions:newDivider();
+
+    reactions:newToggle("back_dodge_walk_forward", "Walk Forward On Back Dodge", false,
+        "When Auto Parry rolls backwards, walks forward during the roll so you stay roughly where you were. Looks more human.");
+    reactions:newSlider("back_dodge_walk_chance", "Walk Forward Chance", 100, 0, 100, 0, true, "%", nil,
+        "How often it walks forward on a back dodge.");
 
     local randomization_dependency_box = reactions_tabbox:newTab("Humanize"):newDependencyBox("ap_randomization");
     randomization_dependency_box:newLabel("Turn on Humanization (Main tab) to use these.", true);
