@@ -137,6 +137,38 @@ if not hook_ok or not hook_result then
     return game:GetService("Players").LocalPlayer:Kick("[vanta] failed to hook, kicking to prevent bans\n" .. tostring(hook_result));
 end;
 
+-- Same as stock init.lua: each inline_asset_b96(...) is replaced by build/bundle.py with
+-- base64(zstd(file)) at build time, decoded here and written once to the workspace.
+-- (Stock also wrote DeepwokenMorphs/GuiItself.rbxm - left out, morphs aren't ported.)
+function decode_asset(asset)
+    local decoded = services.EncodingService:Base64Decode(buffer.fromstring(asset));
+    local decompressed = services.EncodingService:DecompressBuffer(decoded, Enum.CompressionAlgorithm.Zstd);
+    return buffer.tostring(decompressed);
+end;
+
+task.spawn(pcall, function()
+    if not isfile("Project Rain/Assets/proximity.mp3") then
+        writefile("Project Rain/Assets/proximity.mp3", decode_asset(inline_asset_b96("@assets/proximity.mp3")));
+    end;
+    if not isfile("Project Rain/Assets/Parry Sounds/Ultrakill Parry.mp3") then
+        writefile("Project Rain/Assets/Parry Sounds/Ultrakill Parry.mp3", decode_asset(inline_asset_b96("@assets/Ultrakill Parry.mp3")));
+    end;
+    if not isfile("Project Rain/Assets/notification.mp3") then
+        writefile("Project Rain/Assets/notification.mp3", decode_asset(inline_asset_b96("@assets/notification.mp3")));
+    end;
+end);
+
+-- Fonts are written synchronously: custom_font.lua (required right below) loads them.
+if not isfile("Project Rain/Fonts/Lexend.ttf") then
+    writefile("Project Rain/Fonts/Lexend.ttf", decode_asset(inline_asset_b96("@assets/lexend.ttf")));
+end;
+if not isfile("Project Rain/Fonts/Lexend-Bold.ttf") then
+    writefile("Project Rain/Fonts/Lexend-Bold.ttf", decode_asset(inline_asset_b96("@assets/lexend-bold.ttf")));
+end;
+if not isfile("Project Rain/Fonts/Lexend-Medium.ttf") then
+    writefile("Project Rain/Fonts/Lexend-Medium.ttf", decode_asset(inline_asset_b96("@assets/lexend-medium.ttf")));
+end;
+
 lexend = require("@src/utility/custom_font");
 
 if hasnt_accepted_tos then

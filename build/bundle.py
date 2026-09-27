@@ -2,190 +2,237 @@
 """
 build/bundle.py
 
-Project Rain's own OSS release relies on a proprietary bundler (explicitly excluded
-from what was open-sourced - "it's an in-house tool for another product") to turn
-"@src/..." require() calls into a single loadstring-able file. This script is the
-open replacement for that piece: it walks src/, wraps every .lua file as an entry in
-a `modules` table keyed by its "@src/..." alias, and emits one dist/vanta-v2.lua that
-a Roblox executor can loadstring() directly - no live per-file HTTP requires at
-runtime, no dependency on Rojo/Studio's alias resolution.
+Open replacement for Project Rain's proprietary bundler (excluded from the OSS release).
+Produces dist/vanta-v2.lua: one loadstring-able file.
 
-Usage:
-    python3 build/bundle.py
+What Rain's bundler evidently did, and what this reproduces (each inferred from how
+the OSS source is written, not guessed):
 
-Run from anywhere; paths are resolved relative to this script's location. Output goes
-to dist/vanta-v2.lua next to src/.
+  1. `require("@src/...")` resolves against bundled modules. `require(<Instance>)` (used
+     in hooking.lua, struct.lua, a few farms) passes through to Roblox's real require,
+     which is also exposed as `base_require`.
+  2. src/globals.lua is NOT a module. It declares `local` variables (is_chime,
+     parallel_hooks_allowed, lexend, chance_store, loaded_signal, place_name, ...) that
+     other files read/assign as upvalues, and nothing ever require()s it. So it is
+     inlined at the top level of the bundle, before every module, sharing their scope.
+  3. `inline_asset_b96("@assets/<file>")` is a BUILD-TIME macro. Callers decode it with
+     EncodingService Base64Decode + DecompressBuffer(Zstd), so each call is replaced here
+     with a string literal of base64(zstd(file)). zstd comes from the system libzstd.
+  4. Obfuscator/string macros (LPH_*, STR_TBL_SF_INVOKE) become identity functions,
+     since this tree is unobfuscated.
+
+Usage:  python3 build/bundle.py
 """
 
+import base64
+import ctypes
+import ctypes.util
 import os
+import re
+import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 SRC_DIR = os.path.join(REPO_ROOT, "src")
+ASSETS_DIR = os.path.join(REPO_ROOT, "assets")
 DIST_DIR = os.path.join(REPO_ROOT, "dist")
 OUT_PATH = os.path.join(DIST_DIR, "vanta-v2.lua")
 
-# list_modules() manifests: static, because an executor can't glob a GitHub repo at
-# runtime. Add a pattern -> directory mapping here if another part of the source ever
-# calls list_modules() with a new glob; today only automation/loader.lua uses it.
+GLOBALS_REL = "globals.lua"
+
+# list_modules() manifests (executors can't glob a GitHub repo at runtime).
 LIST_MODULES_PATTERNS = {
     "automation/persistent_tasks/*": "automation/persistent_tasks",
 }
 
+INLINE_ASSET_RE = re.compile(r'inline_asset_b96\(\s*"@assets/([^"]+)"\s*\)')
+
+
+# ---------------------------------------------------------------- zstd via libzstd
+def _load_zstd():
+    name = ctypes.util.find_library("zstd") or "libzstd.so.1"
+    lib = ctypes.CDLL(name)
+    lib.ZSTD_compressBound.restype = ctypes.c_size_t
+    lib.ZSTD_compressBound.argtypes = [ctypes.c_size_t]
+    lib.ZSTD_compress.restype = ctypes.c_size_t
+    lib.ZSTD_compress.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+    lib.ZSTD_decompress.restype = ctypes.c_size_t
+    lib.ZSTD_decompress.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t]
+    lib.ZSTD_isError.restype = ctypes.c_uint
+    lib.ZSTD_isError.argtypes = [ctypes.c_size_t]
+    return lib
+
+
+_ZSTD = None
+_ASSET_CACHE = {}
+
+
+def encode_asset(rel):
+    """base64(zstd(file)), round-trip verified."""
+    global _ZSTD
+    if rel in _ASSET_CACHE:
+        return _ASSET_CACHE[rel]
+    path = os.path.join(ASSETS_DIR, rel)
+    if not os.path.isfile(path):
+        sys.exit("bundle.py: inline_asset_b96 references missing asset: assets/%s" % rel)
+    data = open(path, "rb").read()
+    if _ZSTD is None:
+        _ZSTD = _load_zstd()
+    cap = _ZSTD.ZSTD_compressBound(len(data))
+    out = ctypes.create_string_buffer(cap)
+    n = _ZSTD.ZSTD_compress(out, cap, data, len(data), 19)
+    if _ZSTD.ZSTD_isError(n):
+        sys.exit("bundle.py: zstd compress failed for %s" % rel)
+    comp = out.raw[:n]
+    back = ctypes.create_string_buffer(max(len(data), 1))
+    m = _ZSTD.ZSTD_decompress(back, len(data), comp, len(comp))
+    if _ZSTD.ZSTD_isError(m) or back.raw[:m] != data:
+        sys.exit("bundle.py: zstd round-trip mismatch for %s" % rel)
+    encoded = base64.b64encode(comp).decode("ascii")
+    _ASSET_CACHE[rel] = encoded
+    return encoded
+
+
+def expand_inline_assets(content):
+    return INLINE_ASSET_RE.sub(lambda m: '"%s"' % encode_asset(m.group(1)), content)
+
+
+# ---------------------------------------------------------------- bundle pieces
 PREAMBLE = """--[[
     vanta-v2 bundle - GENERATED by build/bundle.py, do not edit by hand.
-    Edit files under src/ and re-run `python3 build/bundle.py` instead.
-
-    This replaces Project Rain's own (proprietary, excluded-from-OSS) bundler. Every
-    "@src/..." require() call in the original source is resolved against the
-    `modules` table below instead of hitting the network or a real Rojo file tree.
+    Edit files under src/ (or assets/) and re-run `python3 build/bundle.py`.
 ]]
 
--- Luraph macro stubs. This OSS tree is unobfuscated, so these are all no-ops/identity.
+-- Obfuscator / string-protection macros: identity, this tree is unobfuscated.
 LPH_OBFUSCATED = false;
 function LPH_ENCSTR(s) return s end;
 function LPH_NO_VIRTUALIZE(fn) return fn end;
 function LPH_JIT_MAX(fn) return fn end;
+function STR_TBL_SF_INVOKE(s) return s end;
 
--- Preserve the REAL Roblox require() (Instance-based, e.g. require(someModuleScript))
--- as base_require before we shadow the global with our string-alias version below.
--- A handful of files (target-filter, defend-action-manager, general_utilitys, ...) use
--- base_require(someInstance) on purpose to pull in real ModuleScripts like
--- ReplicatedStorage.Modules.ReputationSystem - that's not something this bundle ships,
--- it still resolves at runtime against the live game tree exactly like normal.
+-- Real Roblox require (Instance -> ModuleScript), kept for base_require(...) callers
+-- and for plain require(<Instance>) calls, which are passed through below.
 base_require = require;
 
 local modules = {};
 local loaded = {};
+local results = {};
 
 local function require(path)
-    if path == nil then
-        error("require(nil)");
+    if typeof(path) ~= "string" then
+        return base_require(path);
     end;
 
-    if loaded[path] ~= nil then
-        return loaded[path];
+    if loaded[path] then
+        return results[path];
     end;
 
     local mod = modules[path];
     if not mod then
-        error("[vanta] module not found: " .. tostring(path) .. " (not in this bundle - check build/bundle.py's manifest / src/ layout)");
+        error("[vanta] module not found: " .. path .. " (not ported into vanta-v2 yet)", 2);
     end;
 
-    -- Cache the result *before* the module body can recursively require itself back
-    -- (matches Roblox's own require() re-entrancy guard) - store `false` as a sentinel
-    -- for "in progress" so a cyclic require gets nil instead of infinite recursion.
-    loaded[path] = false;
+    loaded[path] = true; -- set before running so a cyclic require returns nil, not recursion
     local result = mod();
-    loaded[path] = result;
+    results[path] = result;
     return result;
 end;
 
--- Static manifests for list_modules(pattern), see LIST_MODULES_PATTERNS in bundle.py.
 local static_module_lists = {
 %(MODULE_LISTS)s};
 
 function list_modules(pattern)
     local list = static_module_lists[pattern];
     if not list then
-        warn("[vanta] list_modules: no manifest for pattern '" .. tostring(pattern) .. "' (add it in build/bundle.py)");
+        warn("[vanta] list_modules: no manifest for '" .. tostring(pattern) .. "' (add it in build/bundle.py)");
         list = {};
     end;
     return ipairs(list);
 end;
 
--- inline_asset_b96 / decode_asset: the real bundler embeds each asset (fonts, sounds,
--- the DeepwokenMorphs .rbxm) as a base64+zstd-compressed string baked into the bundle
--- at build time. assets/base.json in the OSS tree is a stripped placeholder ("[]"),
--- and none of assets/** has been copied into vanta-v2 yet (deferred on purpose - not
--- needed for Auto Parry / farms / UI to work). Until then, this fetches the *raw* file
--- straight from this repo on GitHub instead of decoding an embedded blob, so the
--- writefile() calls in init.lua fail soft (pcall'd there) rather than crash.
-local ASSET_BASE_URL = "https://raw.githubusercontent.com/cranebat/vanta-v2/main/assets/";
-
+-- Every literal inline_asset_b96 call is replaced at build time. If this runs,
+-- something built the call dynamically, which the bundler can't embed.
 function inline_asset_b96(path)
-    -- path looks like "@assets/lexend.ttf" - strip the alias, keep the relative path.
-    return (path:gsub("^@assets/", ""));
+    error("[vanta] inline_asset_b96 called at runtime for " .. tostring(path) .. " - must be a literal \\"@assets/...\\" string so build/bundle.py can embed it", 2);
 end;
 
-function decode_asset(relative_path)
-    local ok, data = pcall(game.HttpGet, game, ASSET_BASE_URL .. relative_path);
-    if not ok then
-        error("[vanta] decode_asset: couldn't fetch " .. tostring(relative_path) .. " (assets/ not uploaded yet or ASSET_BASE_URL in dist/vanta-v2.lua needs updating): " .. tostring(data));
-    end;
-    return data;
-end;
-
+-------------------------------------------------------------------------------
+-- src/globals.lua (inlined at top level: its locals are shared by every module)
+-------------------------------------------------------------------------------
 """
 
 FOOTER = """
--- globals.lua sets up `services`, LPH_* env stubs (harmlessly redundant with the ones
--- above), and a few other executor-level globals. The stock source never explicitly
--- require()s it anywhere - the real bundler must run it unconditionally before init.lua
--- rather than lazily on first use, so we do the same here instead of leaving it dead.
-require("@src/globals");
-
 return (require("@src/init"));
 """
 
 
-def alias_for(rel_path: str) -> str:
-    """src/features/auto-parry/data/base.lua -> @src/features/auto-parry/data/base"""
-    without_ext = rel_path[: -len(".lua")]
-    return "@src/" + without_ext.replace(os.sep, "/")
+def alias_for(rel_path):
+    return "@src/" + rel_path[: -len(".lua")].replace(os.sep, "/")
 
 
 def collect_lua_files():
     entries = []
     for root, _dirs, files in os.walk(SRC_DIR):
-        for name in sorted(files):
+        for name in files:
             if not name.endswith(".lua"):
-                continue;
-            abs_path = os.path.join(root, name);
-            rel_path = os.path.relpath(abs_path, SRC_DIR);
-            entries.append((alias_for(rel_path), abs_path));
-    return sorted(entries, key=lambda e: e[0]);
+                continue
+            abs_path = os.path.join(root, name)
+            rel_path = os.path.relpath(abs_path, SRC_DIR)
+            if rel_path == GLOBALS_REL:
+                continue
+            entries.append((alias_for(rel_path), abs_path))
+    return sorted(entries)
 
 
 def build_module_lists():
-    lines = [];
+    out = []
     for pattern, rel_dir in LIST_MODULES_PATTERNS.items():
-        abs_dir = os.path.join(SRC_DIR, rel_dir);
-        aliases = [];
-        if os.path.isdir(abs_dir):
-            for name in sorted(os.listdir(abs_dir)):
-                if name.endswith(".lua"):
-                    aliases.append(alias_for(os.path.join(rel_dir, name)));
-        lines.append('    ["%s"] = {\n%s\n    },\n' % (
-            pattern,
-            "\n".join('        "%s",' % a for a in aliases),
-        ));
-    return "".join(lines);
+        abs_dir = os.path.join(SRC_DIR, rel_dir)
+        names = sorted(n for n in os.listdir(abs_dir) if n.endswith(".lua")) if os.path.isdir(abs_dir) else []
+        items = "\n".join('        "%s",' % alias_for(os.path.join(rel_dir, n)) for n in names)
+        out.append('    ["%s"] = {\n%s\n    },\n' % (pattern, items))
+    return "".join(out)
+
+
+def read_src(path):
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+    content = expand_inline_assets(content)
+    if not content.endswith("\n"):
+        content += "\n"
+    return content
 
 
 def main():
-    os.makedirs(DIST_DIR, exist_ok=True);
-    entries = collect_lua_files();
+    os.makedirs(DIST_DIR, exist_ok=True)
+    parts = [PREAMBLE % {"MODULE_LISTS": build_module_lists()}]
 
-    parts = [PREAMBLE % {"MODULE_LISTS": build_module_lists()}];
+    globals_src = read_src(os.path.join(SRC_DIR, GLOBALS_REL))
+    parts.append("do end;\n")  # statement boundary before inlined code
+    parts.append(globals_src)
+    parts.append("\n")
 
+    entries = collect_lua_files()
     for alias, abs_path in entries:
-        with open(abs_path, "r", encoding="utf-8") as f:
-            content = f.read();
+        parts.append('modules["%s"] = function()\n' % alias)
+        parts.append(read_src(abs_path))
+        parts.append("end;\n\n")
 
-        parts.append('modules["%s"] = function()\n' % alias);
-        parts.append(content);
-        if not content.endswith("\n"):
-            parts.append("\n");
-        parts.append("end;\n\n");
+    parts.append(FOOTER)
+    bundle = "".join(parts)
 
-    parts.append(FOOTER);
+    leftover = INLINE_ASSET_RE.findall(bundle)
+    if leftover:
+        sys.exit("bundle.py: unexpanded inline_asset_b96 calls remain: %r" % leftover)
 
-    with open(OUT_PATH, "w", encoding="utf-8") as f:
-        f.write("".join(parts));
+    with open(OUT_PATH, "w", encoding="utf-8", newline="\n") as f:
+        f.write(bundle)
 
-    print("Bundled %d modules -> %s" % (len(entries), OUT_PATH));
+    print("Bundled %d modules + inlined globals.lua, embedded %d assets -> %s (%d bytes)" % (
+        len(entries), len(_ASSET_CACHE), OUT_PATH, len(bundle.encode("utf-8"))))
+    for rel in sorted(_ASSET_CACHE):
+        print("  asset: %s" % rel)
 
 
 if __name__ == "__main__":
-    main();
+    main()
