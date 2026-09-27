@@ -36655,4 +36655,10 @@ return {
 end;
 
 
+-- globals.lua sets up `services`, LPH_* env stubs (harmlessly redundant with the ones
+-- above), and a few other executor-level globals. The stock source never explicitly
+-- require()s it anywhere - the real bundler must run it unconditionally before init.lua
+-- rather than lazily on first use, so we do the same here instead of leaving it dead.
+require("@src/globals");
+
 return (require("@src/init"));

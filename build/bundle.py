@@ -101,7 +101,7 @@ end;
 -- needed for Auto Parry / farms / UI to work). Until then, this fetches the *raw* file
 -- straight from this repo on GitHub instead of decoding an embedded blob, so the
 -- writefile() calls in init.lua fail soft (pcall'd there) rather than crash.
-local ASSET_BASE_URL = "https://raw.githubusercontent.com/REPLACE_ME/vanta-v2/main/assets/";
+local ASSET_BASE_URL = "https://raw.githubusercontent.com/cranebat/vanta-v2/main/assets/";
 
 function inline_asset_b96(path)
     -- path looks like "@assets/lexend.ttf" - strip the alias, keep the relative path.
@@ -119,6 +119,12 @@ end;
 """
 
 FOOTER = """
+-- globals.lua sets up `services`, LPH_* env stubs (harmlessly redundant with the ones
+-- above), and a few other executor-level globals. The stock source never explicitly
+-- require()s it anywhere - the real bundler must run it unconditionally before init.lua
+-- rather than lazily on first use, so we do the same here instead of leaving it dead.
+require("@src/globals");
+
 return (require("@src/init"));
 """
 
