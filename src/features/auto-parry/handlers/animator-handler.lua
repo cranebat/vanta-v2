@@ -1048,8 +1048,9 @@ end
             local function respond()
                 if blocking_seq then return end;
                 local can_roll = not aztup_options.filters.Value["Dont Roll"] and local_player.tracker:can_dodge();
-                if can_roll and tick() - last_dodge > 0.6 then
+                if can_roll and tick() - last_dodge > 0.6 and not (self.guard_busy_until and tick() < self.guard_busy_until) then
                     last_dodge = tick();
+                    self.guard_busy_until = tick() + 0.5;
                     DefendActionManager:add_action(entity, "dodge", tick());
                     debug_print("[%s] Multi-hit: rolling.", name);
                 elseif DefendActionManager:posture_allows_block() then
@@ -1072,6 +1073,83 @@ end
 
                 if blocking_seq and not DefendActionManager:posture_allows_block() then
                     debug_print("[%s] Multi-hit: posture too high, letting go of block.", name);
+                    stop_blocking();
+                end;
+                task.wait();
+            end;
+            stop_blocking();
+        end);
+    end
+
+    --[[
+        Vanta: Tick Move Guard. Moves that keep hitting while the attacker moves around
+        (Ice Carve, Electro Carve, Twister Kicks) only check range at their scheduled
+        parry time. If the attacker starts out of range and walks into you later, that
+        parry was already skipped and nothing else happened. Now, for the rest of the
+        move (after its normal parry window), if the attacker gets within range it
+        rolls if it can, otherwise holds block (respecting the posture limit), and lets
+        go when they leave range or the move ends.
+    ]]
+    local TICK_MOVES = {
+        -- move name        = seconds before the guard takes over (normal parry window)
+        IceCarve            = 0.30,
+        ElectroCarve        = 0.45,
+        ElectroCarveNPC     = 0.45,
+        ElectroCarveMagnet  = 0.55,
+        ElectroCarveBlast   = 0.85,
+        TwisterKicks        = 0.80,
+    };
+    local tick_guarded = setmetatable({}, { __mode = "k" });
+
+    local function tick_move_guard(self, track, key)
+        if tick_guarded[track] then return end;
+        tick_guarded[track] = true;
+
+        local entity = self.entity;
+        local started = tick();
+        local grace = TICK_MOVES[key] or 0.4;
+        local deadline = started + (aztup.flags.multi_hit_guard_duration or 2500) / 1000 + grace;
+
+        task.spawn(function()
+            local blocking_seq = nil;
+            local last_dodge = 0;
+
+            local function stop_blocking()
+                if blocking_seq then
+                    DefendActionManager:add_action(entity, "unblock", tick(), blocking_seq);
+                    blocking_seq = nil;
+                end;
+            end
+
+            while tick() < deadline and entity.Parent and aztup.flags.auto_parry do
+                if tick() - started > 0.5 and not track_still_active(track, entity) then break end;
+
+                local their_root = entity:FindFirstChild("HumanoidRootPart");
+                local my_root = local_player.root_part;
+                if not their_root or not my_root then break end;
+
+                local in_range = (their_root.Position - my_root.Position).Magnitude <= (aztup.flags.tick_guard_range or 15);
+
+                if tick() - started >= grace and in_range and not blocking_seq and tick() - last_dodge > 0.7
+                    and track_still_active(track, entity)
+                    and not (self.guard_busy_until and tick() < self.guard_busy_until)
+                then
+                    local can_roll = not aztup_options.filters.Value["Dont Roll"] and local_player.tracker:can_dodge();
+                    if can_roll then
+                        last_dodge = tick();
+                        self.guard_busy_until = tick() + 0.5;
+                        DefendActionManager:add_action(entity, "dodge", tick());
+                        debug_print("[%s] In range mid-move: rolling.", key);
+                    elseif DefendActionManager:posture_allows_block() then
+                        DefendActionManager._current_parry_seq = (DefendActionManager._current_parry_seq or 0) + 1;
+                        blocking_seq = DefendActionManager._current_parry_seq;
+                        DefendActionManager:add_action(entity, "block", tick(), blocking_seq);
+                        DefendActionManager:add_action(entity, "unblock", deadline, blocking_seq);
+                        debug_print("[%s] In range mid-move: holding block.", key);
+                    end;
+                end;
+
+                if blocking_seq and (not in_range or not DefendActionManager:posture_allows_block()) then
                     stop_blocking();
                 end;
                 task.wait();
@@ -1860,6 +1938,13 @@ end
         end
 
         self.running_tracks[track] = { thread = coroutine.running(), feint_threads = {}, cleanups = {}, pre_delay = settle_delay, played_at = played_at };
+
+        do
+            local move_key = pot_name or data.name;
+            if move_key and TICK_MOVES[move_key] and aztup.flags.tick_move_guard ~= false then
+                tick_move_guard(self, track, move_key);
+            end;
+        end;
 
         local actions = action_builder.new({ signal = true })
         local to_evaluate_actions

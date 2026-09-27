@@ -3354,9 +3354,23 @@ return {
                     action.hitbox = Vector3.new(2500, 2500, 2500);
                     action.ignore_early_end = true;
                     action.ignore_hitbox = true;
+
+                    -- Vanta: up close (or when the stream has curved round behind
+                    -- you, where a parry can't cover you) roll instead of parrying.
+                    -- If the roll is on cooldown it still parries as a fallback.
+                    local root = local_player.root_part;
+                    local to_stream = (v.Position - root.Position) * Vector3.new(1, 0, 1);
+                    local look = root.CFrame.LookVector * Vector3.new(1, 0, 1);
+                    local behind = to_stream.Magnitude > 0.1 and look.Magnitude > 0.1 and to_stream.Unit:Dot(look.Unit) < -0.2;
+                    local close = self:distance() <= (aztup.flags.lightning_stream_dodge_range or 30);
+                    if behind or close then
+                        action.prefer_dodge = true;
+                        action.name = behind and "Lightning Stream (behind)" or "Lightning Stream (close)";
+                    end;
+
                     action:push();
-                    
-					return action				
+
+					return action
 end;
 			end;
 			task.wait();

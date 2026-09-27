@@ -13989,6 +13989,33 @@ function apc_fallback.override(entity, entry_name)
     return nil;
 end
 
+--------------------------------------------------------------------------- per-weapon tweaks
+
+-- Seconds added to the APC windup for specific weapons (negative = parry earlier).
+-- Matched against the weapon's name (the "PrimaryWeapon" attribute on its Weapon tool).
+local WEAPON_TWEAKS = {
+    Scalesplitter = -0.040, -- still parried late after the general twinblade change
+};
+
+local function weapon_name(entity)
+    local player = game:GetService("Players"):GetPlayerFromCharacter(entity);
+    local backpack = player and player:FindFirstChild("Backpack");
+    local tool = entity:FindFirstChild("Weapon") or (backpack and backpack:FindFirstChild("Weapon"));
+    local name = tool and tool:GetAttribute("PrimaryWeapon");
+    return typeof(name) == "string" and name or nil
+end
+
+local function weapon_tweak(entity)
+    local name = weapon_name(entity);
+    if not name then return 0, nil end;
+    for weapon, seconds in WEAPON_TWEAKS do
+        if name:lower():find(weapon:lower(), 1, true) then
+            return seconds, name
+        end;
+    end;
+    return 0, name
+end
+
 --------------------------------------------------------------------------- build
 
 local class_cache = {};
@@ -14077,10 +14104,13 @@ function apc_fallback.build(entity, track, path)
         return nil, "no weapon";
     end;
 
+    local ok_tweak, tweak, weapon_label = pcall(weapon_tweak, entity);
+    if not ok_tweak then tweak, weapon_label = 0, nil end;
+
     return {
         source = "apc_fallback",
         action_type = "M1",
-        name = "APC " .. w.type,
+        name = "APC " .. w.type .. (weapon_label and (" (" .. weapon_label .. ")") or ""),
         run = function(action)
             -- `track` and `weapon` are injected as globals by animator-handler.lua's
             -- setfenv before this runs, same as every other data.run entry in base.lua.
@@ -14135,7 +14165,7 @@ function apc_fallback.build(entity, track, path)
                 return;
             end;
 
-            windup = math.max(0, windup + ((aztup.flags.apc_timing_offset or 0) / 1000));
+            windup = math.max(0, windup + tweak + ((aztup.flags.apc_timing_offset or 0) / 1000));
 
             local length = w.length or 4;
             action.when = windup;
@@ -17506,9 +17536,23 @@ return {
                     action.hitbox = Vector3.new(2500, 2500, 2500);
                     action.ignore_early_end = true;
                     action.ignore_hitbox = true;
+
+                    -- Vanta: up close (or when the stream has curved round behind
+                    -- you, where a parry can't cover you) roll instead of parrying.
+                    -- If the roll is on cooldown it still parries as a fallback.
+                    local root = local_player.root_part;
+                    local to_stream = (v.Position - root.Position) * Vector3.new(1, 0, 1);
+                    local look = root.CFrame.LookVector * Vector3.new(1, 0, 1);
+                    local behind = to_stream.Magnitude > 0.1 and look.Magnitude > 0.1 and to_stream.Unit:Dot(look.Unit) < -0.2;
+                    local close = self:distance() <= (aztup.flags.lightning_stream_dodge_range or 30);
+                    if behind or close then
+                        action.prefer_dodge = true;
+                        action.name = behind and "Lightning Stream (behind)" or "Lightning Stream (close)";
+                    end;
+
                     action:push();
-                    
-					return action				
+
+					return action
 end;
 			end;
 			task.wait();
@@ -22487,8 +22531,9 @@ end
             local function respond()
                 if blocking_seq then return end;
                 local can_roll = not aztup_options.filters.Value["Dont Roll"] and local_player.tracker:can_dodge();
-                if can_roll and tick() - last_dodge > 0.6 then
+                if can_roll and tick() - last_dodge > 0.6 and not (self.guard_busy_until and tick() < self.guard_busy_until) then
                     last_dodge = tick();
+                    self.guard_busy_until = tick() + 0.5;
                     DefendActionManager:add_action(entity, "dodge", tick());
                     debug_print("[%s] Multi-hit: rolling.", name);
                 elseif DefendActionManager:posture_allows_block() then
@@ -22511,6 +22556,83 @@ end
 
                 if blocking_seq and not DefendActionManager:posture_allows_block() then
                     debug_print("[%s] Multi-hit: posture too high, letting go of block.", name);
+                    stop_blocking();
+                end;
+                task.wait();
+            end;
+            stop_blocking();
+        end);
+    end
+
+    --[[
+        Vanta: Tick Move Guard. Moves that keep hitting while the attacker moves around
+        (Ice Carve, Electro Carve, Twister Kicks) only check range at their scheduled
+        parry time. If the attacker starts out of range and walks into you later, that
+        parry was already skipped and nothing else happened. Now, for the rest of the
+        move (after its normal parry window), if the attacker gets within range it
+        rolls if it can, otherwise holds block (respecting the posture limit), and lets
+        go when they leave range or the move ends.
+    ]]
+    local TICK_MOVES = {
+        -- move name        = seconds before the guard takes over (normal parry window)
+        IceCarve            = 0.30,
+        ElectroCarve        = 0.45,
+        ElectroCarveNPC     = 0.45,
+        ElectroCarveMagnet  = 0.55,
+        ElectroCarveBlast   = 0.85,
+        TwisterKicks        = 0.80,
+    };
+    local tick_guarded = setmetatable({}, { __mode = "k" });
+
+    local function tick_move_guard(self, track, key)
+        if tick_guarded[track] then return end;
+        tick_guarded[track] = true;
+
+        local entity = self.entity;
+        local started = tick();
+        local grace = TICK_MOVES[key] or 0.4;
+        local deadline = started + (aztup.flags.multi_hit_guard_duration or 2500) / 1000 + grace;
+
+        task.spawn(function()
+            local blocking_seq = nil;
+            local last_dodge = 0;
+
+            local function stop_blocking()
+                if blocking_seq then
+                    DefendActionManager:add_action(entity, "unblock", tick(), blocking_seq);
+                    blocking_seq = nil;
+                end;
+            end
+
+            while tick() < deadline and entity.Parent and aztup.flags.auto_parry do
+                if tick() - started > 0.5 and not track_still_active(track, entity) then break end;
+
+                local their_root = entity:FindFirstChild("HumanoidRootPart");
+                local my_root = local_player.root_part;
+                if not their_root or not my_root then break end;
+
+                local in_range = (their_root.Position - my_root.Position).Magnitude <= (aztup.flags.tick_guard_range or 15);
+
+                if tick() - started >= grace and in_range and not blocking_seq and tick() - last_dodge > 0.7
+                    and track_still_active(track, entity)
+                    and not (self.guard_busy_until and tick() < self.guard_busy_until)
+                then
+                    local can_roll = not aztup_options.filters.Value["Dont Roll"] and local_player.tracker:can_dodge();
+                    if can_roll then
+                        last_dodge = tick();
+                        self.guard_busy_until = tick() + 0.5;
+                        DefendActionManager:add_action(entity, "dodge", tick());
+                        debug_print("[%s] In range mid-move: rolling.", key);
+                    elseif DefendActionManager:posture_allows_block() then
+                        DefendActionManager._current_parry_seq = (DefendActionManager._current_parry_seq or 0) + 1;
+                        blocking_seq = DefendActionManager._current_parry_seq;
+                        DefendActionManager:add_action(entity, "block", tick(), blocking_seq);
+                        DefendActionManager:add_action(entity, "unblock", deadline, blocking_seq);
+                        debug_print("[%s] In range mid-move: holding block.", key);
+                    end;
+                end;
+
+                if blocking_seq and (not in_range or not DefendActionManager:posture_allows_block()) then
                     stop_blocking();
                 end;
                 task.wait();
@@ -23299,6 +23421,13 @@ end
         end
 
         self.running_tracks[track] = { thread = coroutine.running(), feint_threads = {}, cleanups = {}, pre_delay = settle_delay, played_at = played_at };
+
+        do
+            local move_key = pot_name or data.name;
+            if move_key and TICK_MOVES[move_key] and aztup.flags.tick_move_guard ~= false then
+                tick_move_guard(self, track, move_key);
+            end;
+        end;
 
         local actions = action_builder.new({ signal = true })
         local to_evaluate_actions
@@ -45608,6 +45737,10 @@ return function(tab)
         "Fake Misstime Parry: how long before the hit the fake parry tap happens.");
     advanced:newSlider("multi_hit_guard_duration", "Multi-Hit Guard Duration", 2500, 500, 5000, 0, true, "ms", nil,
         "Longest Multi-Hit Guard keeps defending after a failed parry (it also stops after ~0.9s without being hit).");
+    advanced:newSlider("tick_guard_range", "Moving Multi-Hit Range", 15, 5, 40, 0, true, " studs", nil,
+        "Moving Multi-Hit Guard: how close the attacker must get before it rolls/blocks.");
+    advanced:newSlider("lightning_stream_dodge_range", "Lightning Stream Dodge Range", 30, 0, 100, 0, true, " studs", nil,
+        "Roll (instead of parry) Lightning Stream when the caster is this close. 0 = only roll when it comes from behind.");
     advanced:newSlider("gun_parry_lead", "Projectile Parry Lead", 120, 0, 300, 0, true, "ms", nil,
         "Fire Gun / Wind Gun: how long before the projectile reaches you to parry (on top of your ping). Raise if you parry too late, lower if too early.");
     advanced:newSlider("back_dodge_walk_delay", "Walk Forward Delay", 60, 0, 300, 0, true, "ms", nil,
@@ -45723,6 +45856,8 @@ return function(tab)
 
     reactions:newToggle("multi_hit_guard", "Multi-Hit Guard", true,
         "For mantras that keep hitting (Sinister Halo, Electro Carve, Ice Carve): if the first parry doesn't go through, roll - or hold block if you can't roll - for the rest of the move.");
+    reactions:newToggle("tick_move_guard", "Moving Multi-Hit Guard", true,
+        "Ice Carve, Electro Carve, Twister Kicks: if the attacker walks into range after the move has started, roll - or hold block if you can't roll - until they leave range or the move ends.");
     reactions:newSlider("max_block_posture", "Don't Block Above Posture", 85, 10, 100, 0, true, "%", nil,
         "Auto Parry won't HOLD block (Multi-Hit Guard, Block Instead Of Parry, Block fallback) once your posture is above this. Quick parry taps aren't affected.");
     reactions:newDivider();

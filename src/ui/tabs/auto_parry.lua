@@ -130,6 +130,10 @@ return function(tab)
         "Fake Misstime Parry: how long before the hit the fake parry tap happens.");
     advanced:newSlider("multi_hit_guard_duration", "Multi-Hit Guard Duration", 2500, 500, 5000, 0, true, "ms", nil,
         "Longest Multi-Hit Guard keeps defending after a failed parry (it also stops after ~0.9s without being hit).");
+    advanced:newSlider("tick_guard_range", "Moving Multi-Hit Range", 15, 5, 40, 0, true, " studs", nil,
+        "Moving Multi-Hit Guard: how close the attacker must get before it rolls/blocks.");
+    advanced:newSlider("lightning_stream_dodge_range", "Lightning Stream Dodge Range", 30, 0, 100, 0, true, " studs", nil,
+        "Roll (instead of parry) Lightning Stream when the caster is this close. 0 = only roll when it comes from behind.");
     advanced:newSlider("gun_parry_lead", "Projectile Parry Lead", 120, 0, 300, 0, true, "ms", nil,
         "Fire Gun / Wind Gun: how long before the projectile reaches you to parry (on top of your ping). Raise if you parry too late, lower if too early.");
     advanced:newSlider("back_dodge_walk_delay", "Walk Forward Delay", 60, 0, 300, 0, true, "ms", nil,
@@ -245,6 +249,8 @@ return function(tab)
 
     reactions:newToggle("multi_hit_guard", "Multi-Hit Guard", true,
         "For mantras that keep hitting (Sinister Halo, Electro Carve, Ice Carve): if the first parry doesn't go through, roll - or hold block if you can't roll - for the rest of the move.");
+    reactions:newToggle("tick_move_guard", "Moving Multi-Hit Guard", true,
+        "Ice Carve, Electro Carve, Twister Kicks: if the attacker walks into range after the move has started, roll - or hold block if you can't roll - until they leave range or the move ends.");
     reactions:newSlider("max_block_posture", "Don't Block Above Posture", 85, 10, 100, 0, true, "%", nil,
         "Auto Parry won't HOLD block (Multi-Hit Guard, Block Instead Of Parry, Block fallback) once your posture is above this. Quick parry taps aren't affected.");
     reactions:newDivider();

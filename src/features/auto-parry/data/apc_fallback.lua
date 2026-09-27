@@ -136,6 +136,33 @@ function apc_fallback.override(entity, entry_name)
     return nil;
 end
 
+--------------------------------------------------------------------------- per-weapon tweaks
+
+-- Seconds added to the APC windup for specific weapons (negative = parry earlier).
+-- Matched against the weapon's name (the "PrimaryWeapon" attribute on its Weapon tool).
+local WEAPON_TWEAKS = {
+    Scalesplitter = -0.040, -- still parried late after the general twinblade change
+};
+
+local function weapon_name(entity)
+    local player = game:GetService("Players"):GetPlayerFromCharacter(entity);
+    local backpack = player and player:FindFirstChild("Backpack");
+    local tool = entity:FindFirstChild("Weapon") or (backpack and backpack:FindFirstChild("Weapon"));
+    local name = tool and tool:GetAttribute("PrimaryWeapon");
+    return typeof(name) == "string" and name or nil
+end
+
+local function weapon_tweak(entity)
+    local name = weapon_name(entity);
+    if not name then return 0, nil end;
+    for weapon, seconds in WEAPON_TWEAKS do
+        if name:lower():find(weapon:lower(), 1, true) then
+            return seconds, name
+        end;
+    end;
+    return 0, name
+end
+
 --------------------------------------------------------------------------- build
 
 local class_cache = {};
@@ -224,10 +251,13 @@ function apc_fallback.build(entity, track, path)
         return nil, "no weapon";
     end;
 
+    local ok_tweak, tweak, weapon_label = pcall(weapon_tweak, entity);
+    if not ok_tweak then tweak, weapon_label = 0, nil end;
+
     return {
         source = "apc_fallback",
         action_type = "M1",
-        name = "APC " .. w.type,
+        name = "APC " .. w.type .. (weapon_label and (" (" .. weapon_label .. ")") or ""),
         run = function(action)
             -- `track` and `weapon` are injected as globals by animator-handler.lua's
             -- setfenv before this runs, same as every other data.run entry in base.lua.
@@ -282,7 +312,7 @@ function apc_fallback.build(entity, track, path)
                 return;
             end;
 
-            windup = math.max(0, windup + ((aztup.flags.apc_timing_offset or 0) / 1000));
+            windup = math.max(0, windup + tweak + ((aztup.flags.apc_timing_offset or 0) / 1000));
 
             local length = w.length or 4;
             action.when = windup;
