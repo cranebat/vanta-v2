@@ -24424,21 +24424,37 @@ end))
 --[[
     Vanta: No Running Attacks (Automation -> Options).
 
-    Used by the LeftClick hook in features/hooking.lua. When you M1 while sprinting,
-    the click is held back, sprint is stopped, and the click is sent once the game
-    confirms you're no longer sprinting - so you get a normal M1, not a running attack.
-    Auto sprint then stays paused for "Resume Sprint After" so it doesn't kick back in
-    mid-combo. Works whether the sprint came from auto sprint or from you.
+    Used by the LeftClick hook in features/hooking.lua. When you M1 while sprinting:
+      1. sprint is stopped and the click is held back,
+      2. the click is sent once the game confirms you're not sprinting
+         -> it registers as a normal M1, not a running attack,
+      3. as soon as the M1 has started, sprint is turned straight back on, so you
+         keep your speed during the swing.
+    Works whether the sprint came from auto sprint or from you.
 ]]
 feature.resume_at = 0;
 feature.m1_pending = false;
 
-function feature.pause_for_m1()
-    feature.resume_at = tick() + (aztup.flags.no_running_resume_ms or 500) / 1000;
+-- Hold auto sprint off while an M1 is being converted (safety cap: 1s).
+function feature.hold_sprint()
+    feature.resume_at = tick() + 1;
+end
+
+function feature.resume_sprinting()
+    feature.resume_at = 0;
+
+    local humanoid = local_player.humanoid;
+    if not humanoid or humanoid.MoveDirection.Magnitude < 0.1 then return end;
+    if EffectReplicator:FindEffect("Sprinting") or EffectReplicator:FindEffect("ClientCrouch") then return end;
+
+    local sprint_func = get_sprint_funcs();
+    if sprint_func then
+        pcall(sprint_func, true);
+    end;
 end
 
 function feature.stop_sprinting()
-    feature.pause_for_m1();
+    feature.hold_sprint();
 
     local sprint_func, stop_handler = get_sprint_funcs();
     if sprint_func then
@@ -28318,15 +28334,26 @@ end;
                     sprint.m1_pending = false;
 
                     if aztup.flags.block_input and aztup_options.blocked_safe_input_user_moves.Value.M1s and BlockInputManager:should_block_input() then
+                        sprint.resume_sprinting();
                         return;
                     end;
 
                     old_fireserver(self, table.unpack(args, 1, args.n));
+
+                    -- Sprint again as soon as the M1 has started (LightAttack effect),
+                    -- so you keep moving fast during the swing.
+                    local started = tick();
+                    while not EffectReplicator:FindEffect("LightAttack") and tick() - started < 0.25 do
+                        task.wait();
+                    end;
+                    local extra = (aztup.flags.no_running_resprint_ms or 0) / 1000;
+                    if extra > 0 then
+                        task.wait(extra);
+                    end;
+                    sprint.resume_sprinting();
                 end);
                 return;
             end;
-
-            sprint.pause_for_m1();
         end;
     end;
 
@@ -43781,9 +43808,9 @@ function automation:make_general()
     }, "Blatant", false, "Should auto golden tongue be used blatantly (no message), or send a legit message (W/A/S/D)?.");
     options:newSlider("auto_sprint_delay",        "Sprint Delay", 0, 0, 1, 1);
     options:newToggle("no_running_attacks", "No Running Attacks", false,
-        "When you M1 while sprinting, stops the sprint first so you get a normal M1 instead of a running attack. Auto Sprint pauses briefly after each M1.");
-    options:newSlider("no_running_resume_ms", "Resume Sprint After", 500, 100, 2000, 0, true, "ms", nil,
-        "How long Auto Sprint stays off after your last M1.");
+        "When you M1 while sprinting: stops sprint so it comes out as a normal M1 (not a running attack), then sprints again straight away during the swing so you keep your speed.");
+    options:newSlider("no_running_resprint_ms", "Re-Sprint Delay", 0, 0, 300, 0, true, "ms", nil,
+        "Extra wait after your M1 starts before sprinting again. 0 = immediately. Raise it if you still get running attacks.");
     options:newSlider("no_running_max_delay", "Max M1 Delay", 150, 30, 400, 0, true, "ms", nil,
         "Longest your M1 is held back while waiting for the sprint to stop.");
     options:newSlider("auto_wisp_delay",          "Wisp Delay", 0, 0, 1, 1);

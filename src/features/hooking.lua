@@ -516,15 +516,26 @@ end;
                     sprint.m1_pending = false;
 
                     if aztup.flags.block_input and aztup_options.blocked_safe_input_user_moves.Value.M1s and BlockInputManager:should_block_input() then
+                        sprint.resume_sprinting();
                         return;
                     end;
 
                     old_fireserver(self, table.unpack(args, 1, args.n));
+
+                    -- Sprint again as soon as the M1 has started (LightAttack effect),
+                    -- so you keep moving fast during the swing.
+                    local started = tick();
+                    while not EffectReplicator:FindEffect("LightAttack") and tick() - started < 0.25 do
+                        task.wait();
+                    end;
+                    local extra = (aztup.flags.no_running_resprint_ms or 0) / 1000;
+                    if extra > 0 then
+                        task.wait(extra);
+                    end;
+                    sprint.resume_sprinting();
                 end);
                 return;
             end;
-
-            sprint.pause_for_m1();
         end;
     end;
 
