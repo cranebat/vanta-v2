@@ -245,6 +245,16 @@ function Library:MakeUIDraggable(inst, Cutoff, Limit)
 			return
 		end
 
+		-- Vanta: clicks on title-bar buttons (minimise/maximise) shouldn't start a drag.
+		for _, Blocker in next, (Library.DragBlockers or {}) do
+			if Blocker.Visible then
+				local P, S = Blocker.AbsolutePosition, Blocker.AbsoluteSize;
+				if Mouse.X >= P.X and Mouse.X <= P.X + S.X and Mouse.Y >= P.Y and Mouse.Y <= P.Y + S.Y then
+					return
+				end
+			end
+		end
+
 		
 		local absPos = inst.AbsolutePosition
 		local absSize = inst.AbsoluteSize
@@ -2386,6 +2396,8 @@ end;
 	if Config.AutoShow then task.spawn(Library.Toggle) end
 
 	Window.Holder = Outer;
+	Window.Inner = Inner; -- Vanta: used by the minimise/maximise buttons (ui/appearance.lua)
+	Window.MainSection = MainSectionOuter;
 
 	return Window
 end;

@@ -310,6 +310,11 @@ end);
                 added[entity].feint_playing:Disconnect();
                 added[entity].feint_playing = nil; 
             end;
+
+            if added[entity].gun_watch then
+                added[entity].gun_watch:Disconnect();
+                added[entity].gun_watch = nil;
+            end;
  
             added[entity] = nil;
         end
@@ -368,6 +373,11 @@ end
                     end;
                 end);
                 aztup.maid[services.HttpService:GenerateGUID(false)] = self.feint_playing;
+
+                -- Vanta: the sound can arrive already playing (Playing never "changes").
+                if child.IsPlaying or child.Playing then
+                    self:cancel_feinted_tracks(self.animator:GetPlayingAnimationTracks());
+                end;
                 return            
 end;
 
@@ -376,6 +386,49 @@ end;
 
             self:cancel_feinted_tracks(self.animator:GetPlayingAnimationTracks());
         end);
+
+        -- Vanta: Fire Gun has no animation timing. While a player is holding it (you
+        -- hold a mantra before casting), follow what they fire and parry when a
+        -- projectile is about to reach you (see data/gun_projectile.lua).
+        if self.is_player and entity.Name ~= services.Players.LocalPlayer.Name then
+            local function watch_gun(tool)
+                if not tool:IsA("Tool") or not tool.Name:find("^Mantra:GunFire") then return end;
+                task.spawn(function()
+                    local thrown = workspace:FindFirstChild("Thrown");
+                    if not thrown then return end;
+                    local gun = require("@src/features/auto-parry/data/gun_projectile");
+                    local tracker = gun.new_tracker(entity);
+                    local conn = thrown.DescendantAdded:Connect(function(part)
+                        tracker:consider(part);
+                    end);
+                    local last_parry = 0;
+
+                    while tool.Parent == entity and entity.Parent do
+                        if aztup.flags.auto_parry and local_player.character and tick() - last_parry > 0.5 and tracker:impact_soon() then
+                            last_parry = tick();
+                            table.clear(tracker.parts);
+
+                            local allowed = TargetFilter.is_allowed(entity, aztup_options.allowed_targets.Value);
+                            if allowed and aztup_options.filters.Value["Dont Parry If Guildmate"] and self.player and general:is_teammate(self.player) then
+                                allowed = false;
+                            end;
+                            if allowed then
+                                debug_print("[Fire Gun] Projectile about to hit - parrying.");
+                                general:generic_parry_ap_task(entity);
+                            end;
+                        end;
+                        task.wait();
+                    end;
+                    conn:Disconnect();
+                end);
+            end
+
+            for _, child in entity:GetChildren() do
+                watch_gun(child);
+            end;
+            self.gun_watch = entity.ChildAdded:Connect(watch_gun);
+            aztup.maid[services.HttpService:GenerateGUID(false)] = self.gun_watch;
+        end;
 
         self.played = self.animator.AnimationPlayed:Connect(profiler.wrap("animator_handler::run", function(track)
             self:run(track);
@@ -442,7 +495,11 @@ end
     
     
     function AnimatorHandler:cancel_feinted_tracks(playing_tracks)
-        self.last_feint_at = tick();
+        -- One feint can trigger this several times (sound added, sound Playing,
+        -- feint REP sound); treat calls within 0.3s as the same feint.
+        local now = tick();
+        local same_feint = self.last_feint_at and now - self.last_feint_at < 0.3;
+        self.last_feint_at = now;
 
         -- Vanta: Feint Reaction Time. How long after the feint is detected before Auto
         -- Parry reacts to it (drops the pending parry). 0 = instant (stock behaviour).
@@ -454,8 +511,31 @@ end
         end;
         reaction_ms = math.max(0, reaction_ms);
 
-        local to_cancel = {};
+        -- Vanta: also cover tracks we're still processing that have already STOPPED.
+        -- An early feint stops the attack animation straight away, so it's gone from
+        -- GetPlayingAnimationTracks() by the time the feint sound plays - those parries
+        -- were never cancelled, which is why only late feints worked.
+        local candidates, seen = {}, {};
         for _, track in playing_tracks do
+            if not seen[track] then seen[track] = true; table.insert(candidates, track) end;
+        end;
+        for track, state in self.running_tracks do
+            -- Skip hits that are meant to land after their animation ends
+            -- (projectiles etc.) - a feint of a different move shouldn't cancel them.
+            local action = state.action;
+            if action and (action.ignore_early_end or action.ignore_animation_early_end) then continue end;
+            if not seen[track] then seen[track] = true; table.insert(candidates, track) end;
+        end;
+
+        -- One Feint Reaction Chance roll per feint, also used for parries that start
+        -- being tracked just after the feint (see feinted_since).
+        if not same_feint then
+            self.last_feint_reacted = random:NextNumber(0, 100) < (aztup.flags.feint_reaction_chance or 100);
+            self.last_feint_reaction_s = reaction_ms / 1000;
+        end;
+
+        local to_cancel = {};
+        for _, track in candidates do
             local state = self.running_tracks[track];
             if not state then continue end
 
@@ -464,7 +544,7 @@ end
 
             -- Vanta: Feint Reaction Chance (100% = always react, i.e. never parry a
             -- feint it detects; lower = sometimes gets baited). Replaces Bluff Feint Chance.
-            if random:NextNumber(0, 100) >= (aztup.flags.feint_reaction_chance or 100) then
+            if not self.last_feint_reacted then
                 debug_print("[Feint] Not reacting to this feint (Feint Reaction Chance).");
                 continue
             end
@@ -491,6 +571,20 @@ end
 
     
     
+    -- Vanta: true if this entity feinted after `track` started (and we're reacting
+    -- to that feint, and the Feint Reaction Time has passed). Catches feints that
+    -- landed before the parry was registered in running_tracks.
+    function AnimatorHandler:feinted_since(track, action)
+        if action and (action.ignore_feints or action.ignore_early_end or action.ignore_animation_early_end) then return false end;
+        local state = self.running_tracks[track];
+        local played_at = state and state.played_at;
+        if not played_at or not self.last_feint_at or self.last_feint_at < played_at then
+            return false
+        end;
+        if not self.last_feint_reacted then return false end;
+        return tick() >= self.last_feint_at + (self.last_feint_reaction_s or 0)
+    end
+
     function AnimatorHandler:cancel_gale_feinted_tracks(playing_tracks)
         for _, track in playing_tracks do
             local state = self.running_tracks[track];
@@ -897,6 +991,95 @@ end
         end);
     end
 
+    --[[
+        Vanta: Multi-Hit Guard. Mantras that keep hitting for a while (Sinister Halo,
+        Electro Carve, Ice Carve) only get a parry at the start. If that parry doesn't
+        go through (you take damage right after it), defend the rest of the move:
+        roll if you can, otherwise hold block - unless your posture is above the
+        "Don't Block Above Posture" limit. Stops once you've gone ~0.9s without being
+        hit, or after "Multi-Hit Guard Duration".
+    ]]
+    local MULTI_HIT_MOVES = {
+        SinisterHalo = true,
+        IceCarve = true,
+        ElectroCarve = true,
+        ElectroCarveNPC = true,
+        ElectroCarveBlast = true,
+        ElectroCarveMagnet = true,
+    };
+    local guarded_tracks = setmetatable({}, { __mode = "k" });
+
+    local function multi_hit_guard(self, track, name)
+        if guarded_tracks[track] then return end;
+        guarded_tracks[track] = true;
+
+        local humanoid = local_player.humanoid;
+        if not humanoid then return end;
+        local entity = self.entity;
+        local parried_at = tick();
+        local health_before = humanoid.Health;
+
+        task.spawn(function()
+            -- Did the parry fail? (took damage shortly after it)
+            local failed = false;
+            while tick() - parried_at < 0.4 do
+                if humanoid.Health < health_before - 0.5 then
+                    failed = true;
+                    break
+                end;
+                task.wait();
+            end;
+            if not failed then return end;
+
+            debug_print("[%s] Parry didn't go through - defending the rest.", name);
+
+            local deadline = tick() + (aztup.flags.multi_hit_guard_duration or 2500) / 1000;
+            local last_hit = tick();
+            local last_dodge = 0;
+            local blocking_seq = nil;
+
+            local function stop_blocking()
+                if blocking_seq then
+                    DefendActionManager:add_action(entity, "unblock", tick(), blocking_seq);
+                    blocking_seq = nil;
+                end;
+            end
+
+            local function respond()
+                if blocking_seq then return end;
+                local can_roll = not aztup_options.filters.Value["Dont Roll"] and local_player.tracker:can_dodge();
+                if can_roll and tick() - last_dodge > 0.6 then
+                    last_dodge = tick();
+                    DefendActionManager:add_action(entity, "dodge", tick());
+                    debug_print("[%s] Multi-hit: rolling.", name);
+                elseif DefendActionManager:posture_allows_block() then
+                    DefendActionManager._current_parry_seq = (DefendActionManager._current_parry_seq or 0) + 1;
+                    blocking_seq = DefendActionManager._current_parry_seq;
+                    DefendActionManager:add_action(entity, "block", tick(), blocking_seq);
+                    DefendActionManager:add_action(entity, "unblock", deadline, blocking_seq);
+                    debug_print("[%s] Multi-hit: holding block.", name);
+                end;
+            end
+
+            respond();
+            local last_health = humanoid.Health;
+            while tick() < deadline and tick() - last_hit < 0.9 and humanoid.Parent do
+                if humanoid.Health < last_health - 0.5 then
+                    last_hit = tick();
+                    respond();
+                end;
+                last_health = humanoid.Health;
+
+                if blocking_seq and not DefendActionManager:posture_allows_block() then
+                    debug_print("[%s] Multi-hit: posture too high, letting go of block.", name);
+                    stop_blocking();
+                end;
+                task.wait();
+            end;
+            stop_blocking();
+        end);
+    end
+
     -- Vanta: Reactions (Auto Parry tab -> Reactions). Decides, per parry, whether to
     -- parry normally or: hold block through the hit, roll instead, or fake a mistimed
     -- parry (tap block early, then roll when the hit actually lands).
@@ -925,6 +1108,10 @@ end
             result = "Dodge";
         elseif r < (block + dodge + miss) * scale then
             result = "Misstime";
+        end;
+
+        if result == "Block" and not DefendActionManager:posture_allows_block() then
+            return "Parry"
         end;
 
         if (result == "Dodge" or result == "Misstime") then
@@ -1252,6 +1439,7 @@ end;
 
                     local early_thread = task.delay(early_delay, function()
                         if not action.ignore_early_end and not track_still_active(track, self.entity) and not ignore_anim_early_end then return end;
+                        if self:feinted_since(track, action) then return end;
                         if check_action_preconditions_auto_feint(self, track, action, data, action_type, name, index, in_hitbox) then return end;
                         if check_action_situation_filters(self, track, action, action_type, name, index) then return end;
 
@@ -1348,6 +1536,11 @@ end
                 debug_print("[%s] Skipping action %i, animation ended early.", name, index);
                 continue            
 end
+
+            if self:feinted_since(track, action) then
+                debug_print("[%s] Skipping action %i, attacker feinted.", name, index);
+                continue
+            end
 
             if type == "RPUE Parry" then
                 local blocked = false;
@@ -1482,6 +1675,11 @@ end;
             
             execute_resolved_action(self, type, action, data);
 
+            local move_key = pot_name or data.name;
+            if type == "Parry" and aztup.flags.multi_hit_guard ~= false and move_key and MULTI_HIT_MOVES[move_key] then
+                multi_hit_guard(self, track, name);
+            end;
+
             if action.no_more_actions then break end
         end
     end
@@ -1528,6 +1726,7 @@ end
 
     local asset_id = require("@src/utility/asset_id");
     function AnimatorHandler:run(track: AnimationTrack)
+        local played_at = tick();
         local ap = aztup.flags.auto_parry
         local breaker = aztup.flags.ap_breaker
         local asc = aztup.features.anim_speed_changer
@@ -1660,7 +1859,7 @@ end;
 end
         end
 
-        self.running_tracks[track] = { thread = coroutine.running(), feint_threads = {}, cleanups = {}, pre_delay = settle_delay };
+        self.running_tracks[track] = { thread = coroutine.running(), feint_threads = {}, cleanups = {}, pre_delay = settle_delay, played_at = played_at };
 
         local actions = action_builder.new({ signal = true })
         local to_evaluate_actions

@@ -5064,10 +5064,26 @@ return {
     
         action.type = "Parry"
         action.name = string.format("%.2f Wind Gun", distance)
-        action.hitbox = Vector3.new(30, 20, 40) 
+        action.hitbox = Vector3.new(30, 20, 40)
         action:push()
-        return action    
-end    
-} 
+
+        -- Vanta: follow the actual projectile. As soon as it's seen flying at you,
+        -- the fixed-time parry above is cancelled and we parry when it's about to
+        -- reach you instead (any range). If no projectile is spotted, the fixed-time
+        -- parry above still happens exactly as before.
+        local timed = action.actions[#action.actions];
+        local caster = defender.entity;
+        local gun = require("@src/features/auto-parry/data/gun_projectile");
+        task.spawn(function()
+            local hit = gun.wait_for_impact(caster, 0.8, 2.5, function()
+                if timed then timed.cancelled = true end;
+            end);
+            if hit and aztup.flags.auto_parry then
+                general:generic_parry_ap_task(caster);
+            end;
+        end);
+        return action
+end
+}
 end)();
 return tbl

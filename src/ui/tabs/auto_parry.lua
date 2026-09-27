@@ -128,6 +128,10 @@ return function(tab)
         "Block Instead Of Parry: how long to keep holding block after the hit.");
     advanced:newSlider("misstime_early_ms", "Misstime Early By", 220, 150, 500, 0, true, "ms", nil,
         "Fake Misstime Parry: how long before the hit the fake parry tap happens.");
+    advanced:newSlider("multi_hit_guard_duration", "Multi-Hit Guard Duration", 2500, 500, 5000, 0, true, "ms", nil,
+        "Longest Multi-Hit Guard keeps defending after a failed parry (it also stops after ~0.9s without being hit).");
+    advanced:newSlider("gun_parry_lead", "Projectile Parry Lead", 120, 0, 300, 0, true, "ms", nil,
+        "Fire Gun / Wind Gun: how long before the projectile reaches you to parry (on top of your ping). Raise if you parry too late, lower if too early.");
     advanced:newSlider("back_dodge_walk_delay", "Walk Forward Delay", 60, 0, 300, 0, true, "ms", nil,
         "Walk Forward On Back Dodge: wait after the roll starts before walking forward (too early turns it into a forward roll).");
     advanced:newSlider("back_dodge_walk_duration", "Walk Forward Duration", 350, 100, 1000, 0, true, "ms", nil,
@@ -237,6 +241,12 @@ return function(tab)
         "Chance to roll instead of parrying (only when a roll is available).");
     reactions:newSlider("misstime_chance", "Fake Misstime Parry", 0, 0, 100, 0, true, "%", nil,
         "Chance to tap block early (looks like a mistimed parry), then roll when the hit actually lands.");
+    reactions:newDivider();
+
+    reactions:newToggle("multi_hit_guard", "Multi-Hit Guard", true,
+        "For mantras that keep hitting (Sinister Halo, Electro Carve, Ice Carve): if the first parry doesn't go through, roll - or hold block if you can't roll - for the rest of the move.");
+    reactions:newSlider("max_block_posture", "Don't Block Above Posture", 85, 10, 100, 0, true, "%", nil,
+        "Auto Parry won't HOLD block (Multi-Hit Guard, Block Instead Of Parry, Block fallback) once your posture is above this. Quick parry taps aren't affected.");
     reactions:newDivider();
 
     reactions:newToggle("back_dodge_walk_forward", "Walk Forward On Back Dodge", false,

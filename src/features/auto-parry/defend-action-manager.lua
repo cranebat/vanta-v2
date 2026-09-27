@@ -115,6 +115,23 @@ end
         self:add_action(mob, "unblock", tick() + (t or 0.1), seq);
     end;
 
+    -- Vanta: your posture (BreakMeter) as 0-100%, or nil if it can't be read.
+    function DefendActionManager:posture_percent()
+        local character = local_player.character;
+        local meter = character and character:FindFirstChild("BreakMeter");
+        if not meter or not meter.MaxValue or meter.MaxValue <= 0 then
+            return nil
+        end;
+        return math.clamp(meter.Value / meter.MaxValue, 0, 1) * 100
+    end;
+
+    -- Vanta: false once posture is above "Don't Block Above Posture" (holding block
+    -- there risks a guard break). Parries (quick taps) aren't affected.
+    function DefendActionManager:posture_allows_block()
+        local posture = self:posture_percent();
+        return posture == nil or posture <= (aztup.flags.max_block_posture or 85)
+    end;
+
     function DefendActionManager:queue_generic_dodge_task(mob)
         self:add_action(mob, "dodge", tick());
     end;
@@ -264,7 +281,7 @@ else
                         end;
                     end
                 
-                    if should_return or not aztup_options.fallbacks.Value.Block then  
+                    if should_return or not aztup_options.fallbacks.Value.Block or not self:posture_allows_block() then  
                         local seq = action.seq
                         if seq then
                             for j = #self.actions_to_play_through, 1, -1 do

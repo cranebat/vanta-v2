@@ -257,7 +257,9 @@ function apc_fallback.build(entity, track, path)
             elseif w.type == "Club" then
                 windup = (0.180 / speed) + 0.100;
             elseif w.type == "Twinblade" then
-                windup = (0.200 / speed) + 0.050;
+                -- Vanta: was (0.200 / speed) + 0.050 - parried slightly late on
+                -- twinblades (Death's Reverie, Scalesplitter), so 35ms earlier.
+                windup = (0.200 / speed) + 0.015;
             elseif w.type == "Spear" then
                 windup = (0.150 / speed) + 0.100;
             elseif w.type == "Greatsword" then
