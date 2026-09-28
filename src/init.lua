@@ -33,8 +33,9 @@ env = getgenv();
 
 -- Log nuker (utility/security.lua). Hook once per executor session - re-running the
 -- loadstring shouldn't stack another hook on top of the previous one.
-if not env.vanta_log_nuker_active then
-    env.vanta_log_nuker_active = require("@src/utility/security");
+-- (versioned key so re-executing after an update installs the new hooks.)
+if not env.vanta_log_nuker_v3 then
+    env.vanta_log_nuker_v3 = require("@src/utility/security");
 end;
 
 if not LPH_OBFUSCATED then

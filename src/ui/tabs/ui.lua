@@ -25,6 +25,11 @@ function tabs:create_fast_flags(tab)
 	end);	
 
 
+	groupbox:newButton("log nuker: hide from executor too", function()
+		fflags:set("log_nuker_strict", not fflags:get("log_nuker_strict"));
+		Logger:long_notify_sound("log nuker strict mode (filter the log for the executor too) now set to:", fflags:get("log_nuker_strict"), "(rejoin to apply)")
+	end);
+
 	groupbox:newButton("auto load", function()
 		fflags:set("auto_load", not fflags:get("auto_load"));
 		Logger:long_notify_sound("now set to:", fflags:get("auto_load"))

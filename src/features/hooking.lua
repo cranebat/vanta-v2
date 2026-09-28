@@ -256,8 +256,20 @@ Logger.log_for_devs("[hooking] hooking game_mt.__namecall");
 local safety = require("@src/utility/safety");
 local is_a = game.IsA;
 local old_namecall;
+local log_service = game:GetService("LogService");
 old_namecall = hookmetamethod(game, "__namecall", function(self, ...)
     local method = getnamecallmethod();
+
+    -- Vanta log nuker: LogService:GetLogHistory() called the normal way (method
+    -- call) goes through here. Game scripts get the real history with the script's
+    -- entries filtered out (see utility/security.lua); the executor gets the full
+    -- history unless strict mode is on.
+    if method == "GetLogHistory" and self == log_service
+        and (not checkcaller() or getgenv().vanta_log_nuker_strict)
+        and getgenv().vanta_filter_log_history
+    then
+        return getgenv().vanta_filter_log_history(old_namecall(self, ...))
+    end;
     if checkcaller() and method ~= "GetAttribute" or not aztup or not aztup.flags then
         if method ~= "FireServer" or self and self.Name ~= "DrawWeapon" then
             return old_namecall(self, ...)
