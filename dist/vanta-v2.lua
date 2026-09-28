@@ -48,6 +48,7 @@ end;
 local all_modules = {
     "@src/automation/exit_ui",
     "@src/automation/loader",
+    "@src/automation/panel_style",
     "@src/automation/persistent_tasks/auto_authority",
     "@src/automation/persistent_tasks/auto_deepdrill",
     "@src/automation/persistent_tasks/auto_duke",
@@ -482,7 +483,7 @@ Converted["_Frame"].BackgroundTransparency = 0.800000011920929
 Converted["_Frame"].BorderColor3 = Color3.fromRGB(0, 0, 0)
 Converted["_Frame"].BorderSizePixel = 0
 Converted["_Frame"].Position = UDim2.new(0.5, 0, 0, 20)
-Converted["_Frame"].Size = UDim2.new(0, 150, 0, 46)
+Converted["_Frame"].Size = UDim2.new(0, 180, 0, 72)
 Converted["_Frame"].Parent = Converted["_stop_signal"]
 getgenv().added_exit_ui = Converted["_Frame"];
 
@@ -545,6 +546,11 @@ Converted["_title"].Parent = Converted["_Objects"]
 
 Converted["_UIPadding"].PaddingTop = UDim.new(0, 4)
 Converted["_UIPadding"].Parent = Converted["_Objects"]
+
+-- Vanta: panel restyle (colours, font, proper stop button)
+pcall(function()
+    require("@src/automation/panel_style").apply(Converted["_Frame"]);
+end);
 
 Converted._TextButton.MouseButton1Click:Connect(function()
     persistent_data:wipe();
@@ -673,6 +679,15 @@ local loader = {
         end;
 
         if should_anti_afk then
+            -- Vanta: keep the saved automation state fresh (see persistent_data.lua)
+            -- so it resumes after a server hop / re-execute.
+            task.spawn(function()
+                while task.wait(60) do
+                    if not aztup or not aztup.automation or not aztup.automation:has_any() then break end;
+                    persistent_data:touch();
+                end;
+            end);
+
             task.spawn(function()
                 local vim = Instance.new('VirtualInputManager') 
 
@@ -689,6 +704,148 @@ local loader = {
 };
 
 return loader;
+end;
+
+modules["@src/automation/panel_style"] = function()
+--[[
+    automation/panel_style.lua (Vanta)
+
+    Restyles the automation on-screen panels (the "Stop Current" panel and the echo
+    farm stats panels) to match Vanta: dark card, rounded corners, accent-coloured
+    outline / top bar / title (follows your accent colour live), Vanta's UI font,
+    and a proper "Stop Current" button that turns red on hover.
+
+    style.apply(frame) is called on each panel's main Frame after it's built.
+]]
+
+local style = {};
+
+local BG = Color3.fromRGB(15, 15, 19);
+local TEXT = Color3.fromRGB(226, 226, 234);
+local STOP_IDLE = Color3.fromRGB(34, 34, 42);
+local STOP_HOVER = Color3.fromRGB(160, 48, 60);
+
+local function accent()
+    return (Library and Library.AccentColor) or Color3.fromRGB(160, 195, 229)
+end
+
+local function register(inst, props)
+    if Library and Library.AddToRegistry then
+        pcall(Library.AddToRegistry, Library, inst, props);
+    end;
+end
+
+local function font(weight)
+    local family = lexend and lexend.regular and lexend.regular.Family;
+    return Font.new(family or "rbxassetid://12187365364", weight, Enum.FontStyle.Normal)
+end
+
+local function corner(inst, radius)
+    local c = inst:FindFirstChildOfClass("UICorner") or Instance.new("UICorner");
+    c.CornerRadius = UDim.new(0, radius);
+    c.Parent = inst;
+end
+
+local function style_stop_button(button)
+    button.BackgroundTransparency = 0;
+    button.BackgroundColor3 = STOP_IDLE;
+    button.AutoButtonColor = false;
+    button.TextColor3 = TEXT;
+    button.FontFace = font(Enum.FontWeight.SemiBold);
+    button.TextSize = 15;
+    button.Size = UDim2.new(1, 0, 0, 24);
+    corner(button, 4);
+
+    local stroke = Instance.new("UIStroke");
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border;
+    stroke.Color = accent();
+    stroke.Transparency = 0.55;
+    stroke.Parent = button;
+    register(stroke, { Color = "AccentColor" });
+
+    local TweenService = game:GetService("TweenService");
+    local info = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+    button.MouseEnter:Connect(function()
+        TweenService:Create(button, info, { BackgroundColor3 = STOP_HOVER }):Play();
+        TweenService:Create(stroke, info, { Transparency = 1 }):Play();
+    end);
+    button.MouseLeave:Connect(function()
+        TweenService:Create(button, info, { BackgroundColor3 = STOP_IDLE }):Play();
+        TweenService:Create(stroke, info, { Transparency = 0.55 }):Play();
+    end);
+end
+
+function style.apply(frame)
+    if not frame then return end;
+
+    -- Card
+    frame.BackgroundColor3 = BG;
+    frame.BackgroundTransparency = 0.08;
+    corner(frame, 6);
+
+    local stroke = Instance.new("UIStroke");
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border;
+    stroke.Color = accent();
+    stroke.Transparency = 0.5;
+    stroke.Thickness = 1;
+    stroke.Parent = frame;
+    register(stroke, { Color = "AccentColor" });
+
+    local shade = Instance.new("UIGradient");
+    shade.Rotation = 90;
+    shade.Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(200, 200, 212));
+    shade.Parent = frame;
+
+    -- Side padding for the content list
+    local objects = frame:FindFirstChild("Objects");
+    if objects then
+        local padding = objects:FindFirstChildOfClass("UIPadding") or Instance.new("UIPadding");
+        padding.PaddingLeft = UDim.new(0, 10);
+        padding.PaddingRight = UDim.new(0, 10);
+        padding.PaddingTop = UDim.new(0, 8);
+        padding.PaddingBottom = UDim.new(0, 8);
+        padding.Parent = objects;
+    end;
+
+    for _, child in frame:GetDescendants() do
+        if child:IsA("Frame") and child.Parent == frame and child.Name ~= "Objects" and child.Size.Y.Offset <= 4 then
+            -- the thin top bar
+            child.BackgroundColor3 = accent();
+            child.Position = UDim2.new(0, 8, 0, 0);
+            child.Size = UDim2.new(1, -16, 0, 2);
+            register(child, { BackgroundColor3 = "AccentColor" });
+        elseif child:IsA("TextLabel") then
+            child.FontFace = font(child.Name == "title" and Enum.FontWeight.Bold or Enum.FontWeight.Medium);
+            if child.Name == "title" then
+                child.TextColor3 = accent();
+                child.TextXAlignment = Enum.TextXAlignment.Left;
+                child.TextSize = 16;
+                register(child, { TextColor3 = "AccentColor" });
+                local fade = child:FindFirstChildOfClass("UIGradient");
+                if fade then fade:Destroy() end;
+            elseif child.Name == "time" then
+                child.TextColor3 = accent();
+                child.TextXAlignment = Enum.TextXAlignment.Right;
+                register(child, { TextColor3 = "AccentColor" });
+            elseif child.Name == "cycles" then
+                child.TextColor3 = TEXT;
+                child.TextXAlignment = Enum.TextXAlignment.Right;
+            else
+                child.TextColor3 = TEXT;
+                child.TextXAlignment = Enum.TextXAlignment.Left;
+            end;
+        elseif child:IsA("TextButton") then
+            style_stop_button(child);
+        end;
+    end;
+end
+
+-- "12.34e/m" -> "12.3 / min  ·  741 / hr"
+function style.rate_text(per_min)
+    return string.format("%.1f / min  ·  %d / hr", per_min, math.floor(per_min * 60 + 0.5))
+end
+
+return style;
 end;
 
 modules["@src/automation/persistent_tasks/auto_authority"] = function()
@@ -2546,6 +2703,16 @@ struct = automation_struct:construct({
         Converted["_stage"].Name = "stage"
         Converted["_stage"].Parent = Converted["_Objects"]
 
+        -- Vanta: panel restyle (colours, font, layout)
+        local panel_style;
+        pcall(function()
+            panel_style = require("@src/automation/panel_style");
+            Converted["_Frame"].Size = UDim2.new(0, 350, 0, 112);
+            Converted["_echoes_a_min"].Size = UDim2.new(0.62, 0, 0, 16);
+            Converted["_echoes_a_min"].TextSize = 14;
+            panel_style.apply(Converted["_Frame"]);
+        end);
+
         local function fmt_time(totalSeconds)
             totalSeconds = math.floor(totalSeconds)
 
@@ -2575,8 +2742,8 @@ struct = automation_struct:construct({
             local minutes = math.max(1 / 60, (tick() - started_at) / 60)
 
             local per_min = echoes_gained / minutes
-            Converted["_echoes_a_min"].Text = string.format("%.2f", per_min) .. "e/m"
-            Converted["_echo_count"].Text = "got " .. persistent_data:get("echoes_gained", 0) .. " echoes";
+            Converted["_echoes_a_min"].Text = panel_style and panel_style.rate_text(per_min) or (string.format("%.2f", per_min) .. "e/m")
+            Converted["_echo_count"].Text = persistent_data:get("echoes_gained", 0) .. " echoes";
             Converted["_stage"].Text = "stage: " .. (state_machine.current:sub(1,1) == "_" and state_machine.current:sub(2) or state_machine.current);
 
             task.wait(0.2)
@@ -9732,6 +9899,16 @@ struct = automation_struct:construct({
         Converted["_stage"].Name = "stage"
         Converted["_stage"].Parent = Converted["_Objects"]
 
+        -- Vanta: panel restyle (colours, font, layout)
+        local panel_style;
+        pcall(function()
+            panel_style = require("@src/automation/panel_style");
+            Converted["_Frame"].Size = UDim2.new(0, 350, 0, 112);
+            Converted["_echoes_a_min"].Size = UDim2.new(0.62, 0, 0, 16);
+            Converted["_echoes_a_min"].TextSize = 14;
+            panel_style.apply(Converted["_Frame"]);
+        end);
+
         local function fmt_time(totalSeconds)
             totalSeconds = math.floor(totalSeconds)
         
@@ -9761,8 +9938,8 @@ struct = automation_struct:construct({
             local minutes = math.max(1 / 60, (tick() - started_at) / 60)
 
             local per_min = echoes_gained / minutes
-            Converted["_echoes_a_min"].Text = string.format("%.2f", per_min) .. "e/m"
-            Converted["_echo_count"].Text = "got " .. persistent_data:get("echoes_gained", 0) .. " echoes";
+            Converted["_echoes_a_min"].Text = panel_style and panel_style.rate_text(per_min) or (string.format("%.2f", per_min) .. "e/m")
+            Converted["_echo_count"].Text = persistent_data:get("echoes_gained", 0) .. " echoes";
             Converted["_stage"].Text = "stage: " .. (state_machine.current:sub(1,1) == "_" and state_machine.current:sub(2) or state_machine.current);
 
             task.wait(0.2)
@@ -10472,6 +10649,16 @@ struct = automation_struct:construct({
         Converted["_stage"].Name = "stage"
         Converted["_stage"].Parent = Converted["_Objects"]
 
+        -- Vanta: panel restyle (colours, font, layout)
+        local panel_style;
+        pcall(function()
+            panel_style = require("@src/automation/panel_style");
+            Converted["_Frame"].Size = UDim2.new(0, 350, 0, 112);
+            Converted["_echoes_a_min"].Size = UDim2.new(0.62, 0, 0, 16);
+            Converted["_echoes_a_min"].TextSize = 14;
+            panel_style.apply(Converted["_Frame"]);
+        end);
+
         local function fmt_time(totalSeconds)
             totalSeconds = math.floor(totalSeconds)
         
@@ -10501,8 +10688,8 @@ struct = automation_struct:construct({
             local minutes = math.max(1 / 60, (tick() - started_at) / 60)
 
             local per_min = echoes_gained / minutes
-            Converted["_echoes_a_min"].Text = string.format("%.2f", per_min) .. "e/m"
-            Converted["_echo_count"].Text = "got " .. persistent_data:get("echoes_gained", 0) .. " echoes";
+            Converted["_echoes_a_min"].Text = panel_style and panel_style.rate_text(per_min) or (string.format("%.2f", per_min) .. "e/m")
+            Converted["_echo_count"].Text = persistent_data:get("echoes_gained", 0) .. " echoes";
             Converted["_stage"].Text = "stage: " .. (state_machine.current:sub(1,1) == "_" and state_machine.current:sub(2) or state_machine.current);
 
             task.wait(0.2)
@@ -44365,6 +44552,14 @@ end;
 
 Logger.log(string.format("Loaded in %.2fs.", tick() - env.LOAD_START_TIME));
 loaded_signal:fire();
+
+-- Resume any automation that was running before the server hop / re-execute
+-- (this call is in Rain's original init.lua; it was missing from Vanta's).
+xpcall(function()
+    if aztup.automation:has_any() then
+        aztup.automation:start();
+    end;
+end, warn);
 end;
 
 modules["@src/ui/appearance"] = function()
@@ -58125,32 +58320,83 @@ elseif not storage_service:HasItem("persistent_data") then
     storage_service:SetItem("persistent_data", "{}");
 end
 
+--[[
+    Vanta: automation state is also saved to workspace/Vanta/persistent_data.json.
+    MemStorageService (executor memory) isn't guaranteed to survive a server hop on
+    every executor; the file always does. On load, if memory is empty, the file is
+    used - but only if it was saved in the last 20 minutes (a running automation
+    refreshes it every minute), so an old automation never restarts days later.
+]]
+local BACKUP_FILE = "Vanta/persistent_data.json";
+local BACKUP_MAX_AGE = 20 * 60;
+
+local function write_backup(current)
+    pcall(function()
+        writefile(BACKUP_FILE, services.HttpService:JSONEncode({
+            saved_at = os.time(),
+            data = current,
+        }));
+    end);
+end
+
+local function read_backup()
+    local ok, result = pcall(function()
+        if not isfile(BACKUP_FILE) then return nil end;
+        local saved = services.HttpService:JSONDecode(readfile(BACKUP_FILE));
+        if typeof(saved) ~= "table" or typeof(saved.data) ~= "string" then return nil end;
+        if os.time() - (tonumber(saved.saved_at) or 0) > BACKUP_MAX_AGE then return nil end;
+        services.HttpService:JSONDecode(saved.data); -- make sure it's valid
+        return saved.data
+    end);
+    return ok and result or nil
+end
+
 local persistent_data = {} do
     persistent_data.__index = persistent_data;
     persistent_data.current = storage_service:GetItem("persistent_data") or "{}";
 
+    if persistent_data.current == "{}" or persistent_data.current == "" then
+        local backup = read_backup();
+        if backup and backup ~= "{}" then
+            persistent_data.current = backup;
+            pcall(function()
+                storage_service:SetItem("persistent_data", backup);
+            end);
+        end;
+    end;
+
+    local function store(self)
+        storage_service:SetItem("persistent_data", self.current);
+        write_backup(self.current);
+    end
+
     function persistent_data:wipe()
         self.current = "{}";
-        storage_service:SetItem("persistent_data", self.current);
+        store(self);
     end
 
     function persistent_data:set(key, value)
         local decoded = services.HttpService:JSONDecode(self.current);
         decoded[key] = value;
-        
+
         self.current = services.HttpService:JSONEncode(decoded);
-        storage_service:SetItem("persistent_data", self.current);
+        store(self);
     end;
 
     function persistent_data:remove(key)
         local decoded = services.HttpService:JSONDecode(self.current);
         decoded[key] = nil;
         self.current = services.HttpService:JSONEncode(decoded);
-        storage_service:SetItem("persistent_data", self.current);
+        store(self);
+    end;
+
+    -- Refreshes the backup's timestamp (called every minute while an automation runs).
+    function persistent_data:touch()
+        write_backup(self.current);
     end;
 
     function persistent_data:get(key, or_default)
-        return services.HttpService:JSONDecode(self.current)[key] or or_default    
+        return services.HttpService:JSONDecode(self.current)[key] or or_default
 end;
 end;
 

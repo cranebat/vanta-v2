@@ -95,6 +95,15 @@ local loader = {
         end;
 
         if should_anti_afk then
+            -- Vanta: keep the saved automation state fresh (see persistent_data.lua)
+            -- so it resumes after a server hop / re-execute.
+            task.spawn(function()
+                while task.wait(60) do
+                    if not aztup or not aztup.automation or not aztup.automation:has_any() then break end;
+                    persistent_data:touch();
+                end;
+            end);
+
             task.spawn(function()
                 local vim = Instance.new('VirtualInputManager') 
 

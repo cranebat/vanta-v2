@@ -301,3 +301,11 @@ end;
 
 Logger.log(string.format("Loaded in %.2fs.", tick() - env.LOAD_START_TIME));
 loaded_signal:fire();
+
+-- Resume any automation that was running before the server hop / re-execute
+-- (this call is in Rain's original init.lua; it was missing from Vanta's).
+xpcall(function()
+    if aztup.automation:has_any() then
+        aztup.automation:start();
+    end;
+end, warn);

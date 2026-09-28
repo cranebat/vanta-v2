@@ -32,7 +32,7 @@ Converted["_Frame"].BackgroundTransparency = 0.800000011920929
 Converted["_Frame"].BorderColor3 = Color3.fromRGB(0, 0, 0)
 Converted["_Frame"].BorderSizePixel = 0
 Converted["_Frame"].Position = UDim2.new(0.5, 0, 0, 20)
-Converted["_Frame"].Size = UDim2.new(0, 150, 0, 46)
+Converted["_Frame"].Size = UDim2.new(0, 180, 0, 72)
 Converted["_Frame"].Parent = Converted["_stop_signal"]
 getgenv().added_exit_ui = Converted["_Frame"];
 
@@ -95,6 +95,11 @@ Converted["_title"].Parent = Converted["_Objects"]
 
 Converted["_UIPadding"].PaddingTop = UDim.new(0, 4)
 Converted["_UIPadding"].Parent = Converted["_Objects"]
+
+-- Vanta: panel restyle (colours, font, proper stop button)
+pcall(function()
+    require("@src/automation/panel_style").apply(Converted["_Frame"]);
+end);
 
 Converted._TextButton.MouseButton1Click:Connect(function()
     persistent_data:wipe();

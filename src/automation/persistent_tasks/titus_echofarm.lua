@@ -696,6 +696,16 @@ struct = automation_struct:construct({
         Converted["_stage"].Name = "stage"
         Converted["_stage"].Parent = Converted["_Objects"]
 
+        -- Vanta: panel restyle (colours, font, layout)
+        local panel_style;
+        pcall(function()
+            panel_style = require("@src/automation/panel_style");
+            Converted["_Frame"].Size = UDim2.new(0, 350, 0, 112);
+            Converted["_echoes_a_min"].Size = UDim2.new(0.62, 0, 0, 16);
+            Converted["_echoes_a_min"].TextSize = 14;
+            panel_style.apply(Converted["_Frame"]);
+        end);
+
         local function fmt_time(totalSeconds)
             totalSeconds = math.floor(totalSeconds)
         
@@ -725,8 +735,8 @@ struct = automation_struct:construct({
             local minutes = math.max(1 / 60, (tick() - started_at) / 60)
 
             local per_min = echoes_gained / minutes
-            Converted["_echoes_a_min"].Text = string.format("%.2f", per_min) .. "e/m"
-            Converted["_echo_count"].Text = "got " .. persistent_data:get("echoes_gained", 0) .. " echoes";
+            Converted["_echoes_a_min"].Text = panel_style and panel_style.rate_text(per_min) or (string.format("%.2f", per_min) .. "e/m")
+            Converted["_echo_count"].Text = persistent_data:get("echoes_gained", 0) .. " echoes";
             Converted["_stage"].Text = "stage: " .. (state_machine.current:sub(1,1) == "_" and state_machine.current:sub(2) or state_machine.current);
 
             task.wait(0.2)
